@@ -116,8 +116,10 @@ class BidResponseTableBuilder:
         for i, r in enumerate(data["rows"], 1):
             req = f"**{i}. {r['title']}**（{r['req_type']}）\n\n{r['text']}"
             ev = self._ev_md(r["evidences"], r["evidence_ids"])
-            lines.append(f"| {req.replace('|', '\\|')} | "
-                         f"{r['response'].replace('|', '\\|')} | {ev} |")
+            # 注意：f-string 表达式内不允许反斜杠（Python < 3.12），先转义再插值
+            req_esc = req.replace("|", "\\|")
+            resp_esc = r["response"].replace("|", "\\|")
+            lines.append(f"| {req_esc} | {resp_esc} | {ev} |")
         lines += ["", "> 状态口径：FULL=满足（证据支撑）；PARTIAL=部分满足；"
                       "MISSING=资料明确显示不满足；UNKNOWN=现有资料不足，待确认。",
                   "> MISSING/UNKNOWN 不编造：响应列如实陈述，具体数值以【待确认】标注。"]
