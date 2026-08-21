@@ -25,6 +25,7 @@ BACKEND = REPO_ROOT / "backend"
 sys.path.insert(0, str(BACKEND))
 
 from app import config  # noqa: E402
+from app.db import Database  # noqa: E402
 
 SAMPLE_DIR = config.SAMPLES_DIR / "智慧园区项目"
 KB_SAMPLE_DIR = config.SAMPLES_DIR / "企业资料包"
@@ -171,3 +172,105 @@ BASELINE_ITEMS = [
         "importance": "中", "is_star": False, "page": 45,
     },
 ]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# M3 需求-能力匹配夹具
+# ═══════════════════════════════════════════════════════════════════════
+_REQ_SEQ = {"n": 0}
+
+
+def m3_req(tender_id: str = "T-M3", rid: str | None = None,
+           type_: str = "技术要求", title: str = "", text: str = "",
+           quantitative: list | None = None, importance: str = "中",
+           is_star: bool = False, document: str = "01_招标文件.docx",
+           page: int | None = 1, section_path: str = "第三章 技术要求",
+           block_id: str = "", snippet: str = ""):
+    """构造 M1 Requirement（M3 测试用）。不传 rid 时自动 REQ-XXXX 编号。"""
+    from app.schemas import (QuantitativeItem, Requirement, RequirementType,
+                             SourceAnchor)
+
+    if rid is None:
+        _REQ_SEQ["n"] += 1
+        rid = f"REQ-{_REQ_SEQ['n']:04d}"
+    return Requirement(
+        id=rid, tender_id=tender_id,
+        type=RequirementType(type_),
+        title=title, original_text=text,
+        quantitative=[QuantitativeItem(**q) for q in (quantitative or [])],
+        importance=importance, is_star=is_star,
+        source=SourceAnchor(
+            document=document, doc_id=f"doc-{document}",
+            page=page, section_path=section_path,
+            block_id=block_id, snippet=snippet or text[:80]),
+    )
+
+
+def seed_m3_kb(db, emb, materials: list[dict] | None = None,
+               capabilities: list[dict] | None = None,
+               chunks: list[dict] | None = None) -> dict:
+    """直接把企业资料/能力卡/知识块写入临时 DB（跳过上传与处理管线）。
+
+    返回 {material_ids: {file_name: id}} 供测试断言溯源。
+    chunks 的 embedding 用注入的 FakeEmbedding 计算（SQLite 降级检索依赖）。
+    """
+    import json
+
+    from app.schemas import Capability, CapabilityCategory, KbChunk
+
+    ids: dict[str, str] = {}
+    for m in (materials or []):
+        db.insert("kb_materials", {
+            "id": m["id"], "category": m["category"],
+            "file_name": m["file_name"], "stored_name": m["file_name"],
+            "file_type": m.get("file_type", "pdf"),
+            "total_pages": m.get("total_pages", 1),
+            "char_count": m.get("char_count", 0),
+            "ocr_pages": "[]", "raw_hash": "", "parser_version": "1.0.0",
+            "parse_error": "", "parsed_file": f"{m['id']}.json",
+            "process_status": "已完成", "process_progress": "",
+            "chunk_count": m.get("chunk_count", 0),
+            "capability_count": m.get("capability_count", 0),
+            "index_status": "done",
+            "created_at": m.get("created_at", "2026-01-01 00:00:00"),
+        })
+        ids[m["file_name"]] = m["id"]
+    for c in (capabilities or []):
+        cap = Capability(
+            id=c["id"], category=CapabilityCategory(c["category"]),
+            name=c["name"], attributes=c.get("attributes", {}),
+            description=c.get("description", ""),
+            source_doc=c.get("source_doc", ""),
+            source_page=c.get("source_page"),
+        )
+        db.insert("capabilities", Database.capability_to_row(cap))
+    for ch in (chunks or []):
+        chunk = KbChunk(
+            id=ch["id"], material_id=ch["material_id"],
+            category=CapabilityCategory(ch["category"]),
+            file_name=ch["file_name"], content=ch["content"],
+            section_path=ch.get("section_path", ""),
+            page_start=ch.get("page_start"), page_end=ch.get("page_end"),
+            block_ids=ch.get("block_ids", []),
+            seq=ch.get("seq", 1),
+        )
+        vec = emb.embed([ch["content"]])[0]
+        db.insert("kb_chunks", Database.chunk_to_row(
+            chunk, embedding=[round(x, 6) for x in vec]))
+    return ids
+
+
+@pytest.fixture()
+def m3_env(monkeypatch, tmp_env):
+    """M3 离线环境：禁 Milvus + 确定性伪嵌入（SearchService 惰性导入路径）。
+
+    不 patch LLM：无 LLM_API_KEY 时 create_llm_client 自动 Mock，
+    normalizer/judge 均按 mock 模型走确定性回退 —— 正是 M3 的离线口径。
+    """
+    from app.services import embedding
+    from app.services.embedding import FakeEmbedding
+
+    monkeypatch.setattr(config, "MILVUS_ENABLED", False)
+    fake_emb = FakeEmbedding(dimension=config.EMBEDDING_DIM)
+    monkeypatch.setattr(embedding, "create_embedding", lambda: fake_emb)
+    return fake_emb

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Optional
 
 from .. import config
@@ -95,6 +96,12 @@ def _truncate(text: str, max_chars: int) -> str:
     return text[:max_chars] if len(text) > max_chars else text
 
 
+# Milvus 连接失败冷却（秒）：连接异常后冷却期内直接快速失败，
+# 由 SearchService 立即降级 SQLite —— 否则每一条需求每次检索都重付
+# 一次 ~10s 的连接超时，一场匹配上百次检索全耗在无效重试上
+_CONN_COOLDOWN = 60.0
+
+
 class MilvusVectorStore(VectorStore):
     """Milvus 向量存储（MilvusClient 新 API，集合 bid_chunks）。"""
 
@@ -104,11 +111,21 @@ class MilvusVectorStore(VectorStore):
         self.uri = uri or config.MILVUS_URI
         self.collection = collection or config.MILVUS_COLLECTION
         self._client = None
+        self._conn_error_at = 0.0
+        self._conn_error_msg = ""
 
     def _get_client(self):
         if self._client is None:
+            if time.time() - self._conn_error_at < _CONN_COOLDOWN:
+                raise RuntimeError(
+                    f"Milvus 连接冷却中（上次失败：{self._conn_error_msg[:80]}）")
             from pymilvus import MilvusClient  # 延迟导入：离线环境无 pymilvus 也能 import 本模块
-            self._client = MilvusClient(uri=self.uri)
+            try:
+                self._client = MilvusClient(uri=self.uri)
+            except Exception as e:  # noqa: BLE001 —— 记录失败时间，冷却期内不再重试
+                self._conn_error_at = time.time()
+                self._conn_error_msg = str(e)
+                raise
         return self._client
 
     def ensure(self) -> None:

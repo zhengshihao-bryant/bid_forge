@@ -265,6 +265,132 @@ class Database:
             created_at=row.get("created_at") or now_str(),
         )
 
+    # ------------------------------------------------------------------
+    # M3：CanonicalRequirement / Evidence / MatchResult ↔ 行 映射
+    # ------------------------------------------------------------------
+    @staticmethod
+    def canonical_to_row(c: "CanonicalRequirement") -> dict:
+        return {
+            "id": c.id,
+            "tender_id": c.tender_id,
+            "req_type": c.req_type.value,
+            "title": c.title,
+            "text": c.text,
+            "constraints": json.dumps(
+                [x.model_dump(mode="json") for x in c.constraints], ensure_ascii=False),
+            "source_requirement_ids": json.dumps(c.source_requirement_ids, ensure_ascii=False),
+            "parent_requirement_id": c.parent_requirement_id,
+            "importance": c.importance,
+            "is_star": int(c.is_star),
+            "is_scoring": int(c.is_scoring),
+            "merge_method": c.merge_method,
+            "sources": json.dumps(
+                [s.model_dump(mode="json") for s in c.sources], ensure_ascii=False),
+            "created_at": c.created_at,
+        }
+
+    @staticmethod
+    def row_to_canonical(row: dict) -> "CanonicalRequirement":
+        from .services.matching.models import (CanonicalRequirement, Constraint,
+                                               RequirementSourceRef, RequirementTypeM3)
+
+        return CanonicalRequirement(
+            id=row["id"],
+            tender_id=row["tender_id"],
+            req_type=RequirementTypeM3(row.get("req_type") or "OTHER"),
+            title=row.get("title") or "",
+            text=row.get("text") or "",
+            constraints=[Constraint(**x) for x in json.loads(row.get("constraints") or "[]")],
+            source_requirement_ids=json.loads(row.get("source_requirement_ids") or "[]"),
+            parent_requirement_id=row.get("parent_requirement_id") or "",
+            importance=row.get("importance") or "中",
+            is_star=bool(row.get("is_star")),
+            is_scoring=bool(row.get("is_scoring")),
+            merge_method=row.get("merge_method") or "",
+            sources=[RequirementSourceRef(**s) for s in json.loads(row.get("sources") or "[]")],
+            created_at=row.get("created_at") or now_str(),
+        )
+
+    @staticmethod
+    def evidence_to_row(e: "Evidence") -> dict:
+        return {
+            "id": e.evidence_id,
+            "tender_id": e.tender_id,
+            "requirement_id": e.requirement_id,
+            "source_type": e.source_type.value,
+            "source_id": e.source_id,
+            "content": e.content,
+            "category": e.category,
+            "document_id": e.document_id,
+            "section_id": e.section_id,
+            "page": e.page,
+            "section_path": e.section_path,
+            "block_id": e.block_id,
+            "confidence": e.confidence,
+            "retrieval_score": e.retrieval_score,
+            "validation": e.validation.value,
+            "matched_text": e.matched_text,
+            "created_at": e.created_at,
+        }
+
+    @staticmethod
+    def row_to_evidence(row: dict) -> "Evidence":
+        from .services.matching.models import (Evidence, EvidenceSourceType,
+                                               EvidenceValidation)
+
+        return Evidence(
+            evidence_id=row["id"],
+            tender_id=row.get("tender_id") or "",
+            requirement_id=row.get("requirement_id") or "",
+            source_type=EvidenceSourceType(row["source_type"]),
+            source_id=row.get("source_id") or "",
+            content=row.get("content") or "",
+            category=row.get("category") or "",
+            document_id=row.get("document_id") or "",
+            section_id=row.get("section_id") or "",
+            page=row.get("page"),
+            section_path=row.get("section_path") or "",
+            block_id=row.get("block_id") or "",
+            confidence=row.get("confidence") or 0.0,
+            retrieval_score=row.get("retrieval_score") or 0.0,
+            validation=EvidenceValidation(row.get("validation") or "UNCHECKED"),
+            matched_text=row.get("matched_text") or "",
+            created_at=row.get("created_at") or now_str(),
+        )
+
+    @staticmethod
+    def match_to_row(m: "MatchResult") -> dict:
+        return {
+            "id": m.id,
+            "tender_id": m.tender_id,
+            "requirement_id": m.requirement_id,
+            "status": m.status.value,
+            "confidence": m.confidence,
+            "reason": m.reason,
+            "method": m.method.value,
+            "evidence_ids": json.dumps(m.evidence_ids, ensure_ascii=False),
+            "conflicts": json.dumps(
+                [c.model_dump(mode="json") for c in m.conflicts], ensure_ascii=False),
+            "created_at": m.created_at,
+        }
+
+    @staticmethod
+    def row_to_match(row: dict) -> "MatchResult":
+        from .services.matching.models import Conflict, MatchMethod, MatchResult, MatchStatus
+
+        return MatchResult(
+            id=row["id"],
+            tender_id=row["tender_id"],
+            requirement_id=row["requirement_id"],
+            status=MatchStatus(row["status"]),
+            confidence=row.get("confidence") or 0.0,
+            reason=row.get("reason") or "",
+            method=MatchMethod(row.get("method") or "heuristic"),
+            evidence_ids=json.loads(row.get("evidence_ids") or "[]"),
+            conflicts=[Conflict(**c) for c in json.loads(row.get("conflicts") or "[]")],
+            created_at=row.get("created_at") or now_str(),
+        )
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # DDL（M2/M3 表预建，向前兼容）
@@ -399,6 +525,72 @@ CREATE TABLE IF NOT EXISTS matches (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_matches_requirement ON matches(requirement_id);
+
+-- M3（正式版）：需求标准化 / 证据 / 匹配结果
+-- matches 表为 M1 预建的旧版形状（verdict 中文枚举），M3 采用 requirement_matches
+CREATE TABLE IF NOT EXISTS canonical_requirements (
+    id TEXT PRIMARY KEY,
+    tender_id TEXT NOT NULL,
+    req_type TEXT NOT NULL DEFAULT 'OTHER',
+    title TEXT NOT NULL,
+    text TEXT NOT NULL DEFAULT '',
+    constraints TEXT NOT NULL DEFAULT '[]',
+    source_requirement_ids TEXT NOT NULL DEFAULT '[]',
+    parent_requirement_id TEXT NOT NULL DEFAULT '',
+    importance TEXT NOT NULL DEFAULT '中',
+    is_star INTEGER NOT NULL DEFAULT 0,
+    is_scoring INTEGER NOT NULL DEFAULT 0,
+    merge_method TEXT NOT NULL DEFAULT '',
+    sources TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_canonical_tender ON canonical_requirements(tender_id);
+
+CREATE TABLE IF NOT EXISTS evidences (
+    id TEXT PRIMARY KEY,
+    tender_id TEXT NOT NULL,
+    requirement_id TEXT NOT NULL DEFAULT '',
+    source_type TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT '',
+    document_id TEXT NOT NULL DEFAULT '',
+    section_id TEXT NOT NULL DEFAULT '',
+    page INTEGER,
+    section_path TEXT NOT NULL DEFAULT '',
+    block_id TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL DEFAULT 0,
+    retrieval_score REAL NOT NULL DEFAULT 0,
+    validation TEXT NOT NULL DEFAULT 'UNCHECKED',
+    matched_text TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_evidences_requirement ON evidences(requirement_id);
+CREATE INDEX IF NOT EXISTS idx_evidences_tender ON evidences(tender_id);
+
+CREATE TABLE IF NOT EXISTS requirement_matches (
+    id TEXT PRIMARY KEY,
+    tender_id TEXT NOT NULL,
+    requirement_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 0,
+    reason TEXT NOT NULL DEFAULT '',
+    method TEXT NOT NULL DEFAULT 'heuristic',
+    evidence_ids TEXT NOT NULL DEFAULT '[]',
+    conflicts TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_requirement_matches_tender ON requirement_matches(tender_id);
+CREATE INDEX IF NOT EXISTS idx_requirement_matches_req ON requirement_matches(requirement_id);
+
+CREATE TABLE IF NOT EXISTS matching_runs (
+    tender_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT '未匹配',
+    progress TEXT NOT NULL DEFAULT '',
+    canonical_count INTEGER NOT NULL DEFAULT 0,
+    match_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
 
 -- M3：标书模板 + 章节稿
 CREATE TABLE IF NOT EXISTS outlines (

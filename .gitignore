@@ -22,6 +22,7 @@ scripts/_sample_cache.json
 scripts/_kb_sample_cache.json
 scripts/_m1_verify_report.txt
 scripts/_m2_verify_report.txt
+scripts/_m3_verify_report.txt
 scripts/_drift_report.txt
 
 # 前端

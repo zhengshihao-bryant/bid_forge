@@ -22,6 +22,10 @@ app/api/main.py —— FastAPI 应用入口
     POST /api/knowledge/materials/{id}/process 后台处理：切块 + 嵌入 + 能力卡提取
     GET  /api/knowledge/capabilities        能力卡列表（人工修订 PATCH）
     GET  /api/knowledge/search              语义检索（Milvus 挂自动降级 SQLite）
+    POST /api/matching/tenders/{id}/match   后台匹配（标准化 + 匹配 + 判定；状态轮询）
+    GET  /api/matching/tenders/{id}/requirements  规范需求（REQ-C-XXXX）
+    GET  /api/matching/tenders/{id}/matches      匹配记录（FULL/PARTIAL/MISSING/UNKNOWN）
+    GET  /api/matching/tenders/{id}/response-table  需求响应表（json/markdown）
 
 交互式文档（Swagger UI）：http://localhost:8001/docs
 """
@@ -39,6 +43,7 @@ from .. import config
 from ..db import Database
 from ..services.vector_store import get_milvus_store
 from .routes_knowledge import router as knowledge_router
+from .routes_matching import router as matching_router
 from .routes_tenders import router as tenders_router
 
 API_VERSION = "0.1.0"
@@ -85,6 +90,7 @@ app.add_middleware(
 
 app.include_router(tenders_router)
 app.include_router(knowledge_router)
+app.include_router(matching_router)
 
 
 # ═══════════════════════════════════════════════════════════════════════

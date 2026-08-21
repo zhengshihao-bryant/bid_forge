@@ -64,5 +64,20 @@ EMBEDDING_BACKEND = os.getenv("EMBEDDING_BACKEND", "bge")
 # 知识库切块：单块最大字符数
 KB_CHUNK_CHARS = int(os.getenv("KB_CHUNK_CHARS", "600"))
 
+# ── M3：需求-能力匹配 ──
+# LLM 是否参与规范化合并与判定（false = 全离线确定性路径：规则+启发式；
+# 无 LLM_API_KEY 时 create_llm_client 自动 Mock，效果等同 false）
+M3_LLM_ENABLED = os.getenv("M3_LLM_ENABLED", "true").lower() in ("1", "true", "yes")
+# 每条规范需求的语义检索候选数 / 送入判定的证据条数
+M3_TOP_K = int(os.getenv("M3_TOP_K", "8"))
+M3_JUDGE_EVIDENCE = int(os.getenv("M3_JUDGE_EVIDENCE", "5"))
+# RAG 命中进入证据池的最低相关性分（Rerank 0-1；低于此分视为无关命中丢弃，
+# 避免"无关 chunk 原文自证 VALID"污染证据池导致无证据需求被误判满足）
+M3_RAG_MIN_SCORE = float(os.getenv("M3_RAG_MIN_SCORE", "0.3"))
+# 关键词重叠下限（bigram key_overlap 0-1）：类别亲和分可能把"同类别但内容
+# 无关"的 chunk 抬过总分下限（如涉密资质需求命中 ISO 证书 chunk），
+# 关键词重叠必须达标才算"内容相关"
+M3_RAG_MIN_KW = float(os.getenv("M3_RAG_MIN_KW", "0.2"))
+
 # 解析器版本（写入 documents.parser_version，M5 重解析可追溯）
 PARSER_VERSION = "1.0.0"
