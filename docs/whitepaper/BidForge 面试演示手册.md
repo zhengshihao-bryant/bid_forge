@@ -175,7 +175,7 @@ cd frontend && npm run dev
 
 **19. 存储为什么用 SQLite？生产怎么办？**
 一句话：降低部署复杂度完成端到端验证，数据访问收敛在 Database 封装层（无 ORM），迁移 PostgreSQL 改动集中在存储层。
-锚点：`db.py:31 Database` / `vector_store.py` engine 字段（白皮书 10.1）
+锚点：`db.py Database`（`:38 connect` `:49 execute` `:61 query`，含 db_mappers/db_schema 分层）/ `vector_store.py` engine 字段（白皮书 10.1）
 
 **20. 这个项目最自豪的设计是什么？**
 一句话：事实约束铁律 + 四状态口径 + 只检查不重写——这三条从第一天定下，被 290 个测试和 7 次端到端验收证明是对的；它们共同支撑一个判断：结果可信。

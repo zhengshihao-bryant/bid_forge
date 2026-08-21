@@ -5,6 +5,7 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.pytest_tmp/
 
 # 数据（样例 samples 入库保证测试确定性；原始上传与解析产物不入库）
 backend/data/raw/

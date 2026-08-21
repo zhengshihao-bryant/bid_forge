@@ -57,7 +57,7 @@ tests/                      # 离线测试（290 passed；pytest.ini 默认跳�
 | 源码模块 | 关键代码 | 面试回答 |
 |---|---|---|
 | `api/main.py:116-127` | 10 个 router 挂载，业务路由全局挂认证依赖 | 讲"一次请求怎么流动"：上传 → 解析(M1) → 知识库(M2) → 匹配(M3) → 生成(M4) → 质检(M5) → 工作台(M6) → 治理(M7)。不是技术列表，是数据流。 |
-| `db.py:31 Database` / `:60 query` / `:68 insert` / `:89 init_schema` | 数据访问全部收敛在封装层，业务代码不写裸 SQL 之外的连接管理；每操作独立连接 + WAL | 六大实体（Tender/Requirement/Evidence/Capability/BidDocument/QualityReport）贯穿一条可追溯数据链——任何一句标书能回答"这话哪来的"。 |
+| `db.py Database`（连接/CRUD，`:38 connect` `:49 execute` `:61 query`）+ `db_mappers.py MappersMixin`（ORM 映射）+ `db_schema.py DDL/seed` | 数据访问全部收敛在封装层，业务代码不写裸 SQL 之外的连接管理；每操作独立连接 + WAL；存储层三层拆分便于迁移 | 六大实体（Tender/Requirement/Evidence/Capability/BidDocument/QualityReport）贯穿一条可追溯数据链——任何一句标书能回答"这话哪来的"。 |
 | `config.py` | env 驱动（AUTH_ENABLED 可关，验收脚本两阶段用） | 演示账号 5 个（admin/admin123…）与 JWT_SECRET 在 README 已记录。 |
 | `frontend/src/router/index.ts` + `views/projects/*.vue` | 8 路由对应 6 阶段工作台 | 前端只是管线的工作台视图，核心价值在后端链路。 |
 
@@ -168,7 +168,7 @@ tests/                      # 离线测试（290 passed；pytest.ini 默认跳�
 
 | 源码模块 | 关键代码 | 面试回答 |
 |---|---|---|
-| `db.py:31 Database`（`:60 query` `:68 insert` `:73 update` 全封装） | 无 ORM，数据访问收敛在封装层 | 当前 SQLite 为降低部署复杂度完成端到端验证；**迁移 PostgreSQL 改动集中在存储层**，业务逻辑不感知存储实现。 |
+| `db.py Database`（`:49 execute` `:61 query` `:69 insert` `:74 update` 全封装）+ `db_mappers.py` / `db_schema.py` | 无 ORM，数据访问收敛在封装层 | 当前 SQLite 为降低部署复杂度完成端到端验证；**迁移 PostgreSQL 改动集中在存储层**，业务逻辑不感知存储实现。 |
 | `vector_store.py` engine 字段 | 存储后端抽象 | 同理可换真实 Milvus 集群。 |
 | 演进路径 | — | PostgreSQL（并发/事务）→ Redis（热点缓存）→ 对象存储（文件）→ 分布式任务队列（长任务解耦）。 |
 
