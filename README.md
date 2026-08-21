@@ -147,7 +147,9 @@ flowchart TB
 │   ├── app/
 │   │   ├── schemas.py        # 六大实体 Pydantic 模型（数据模型是项目的分水岭）
 │   │   ├── config.py         # 路径与 env 配置
-│   │   ├── db.py             # SQLite（每任务独立连接 + WAL，线程安全）
+│   │   ├── db.py             # SQLite 存储层入口（连接 + 基础 CRUD，Mixin 聚合映射层）
+│   │   ├── db_mappers.py     # ORM 映射层（行 ↔ 模型双向转换，Database 继承 MappersMixin）
+│   │   ├── db_schema.py      # Schema 层（DDL / RBAC 权限矩阵 / seed_rbac / get_db）
 │   │   ├── api/              # FastAPI（main + routes_tenders + routes_knowledge）
 │   │   ├── parsers/          # PDF/Word/Excel/OCR 四类解析器，统一 ParsedDocument 产物
 │   │   └── services/         # llm + extraction（M1 提取）
@@ -177,6 +179,19 @@ flowchart TB
 ```
 
 ## 五、快速开始
+
+### 方式 A：Docker 一键启动（推荐，30 秒）
+
+```bash
+# 前端 http://localhost:8080 · 后端 API http://localhost:8001/docs
+docker compose up --build
+# 或 Windows PowerShell：.\scripts\demo.ps1   Linux/macOS：./scripts/demo.sh
+```
+
+镜像内置轻量运行依赖（fake 嵌入 + SQLite 降级，无需 torch/Milvus 即可跑通全流程）；
+数据卷持久化上传内容，样例包由 entrypoint 首次启动自动补齐。
+
+### 方式 B：本机源码运行
 
 ```bash
 # 1. 环境（依赖已在 requirements.txt 钉版；Windows 中文控制台）
@@ -306,7 +321,20 @@ M7（企业级能力，`/api/auth` + `/api/admin` + `/api/projects` + `/api/know
 | `GET /api/tasks` / `GET /api/tasks/{id}` / `POST /api/tasks/{id}/cancel` | 任务中心（5 类任务统一登记；非 admin 只见自己任务；cancel 仅 pending：本人→cancelled/他人 403/running 409/终态 409/不存在 404） |
 | `GET /api/eval/retrieval` / `GET /api/eval/generation` / `GET /api/eval/trends` / `GET /api/eval/summary` | 评估体系（Recall@K/MRR、生成 4 指标、质量趋势、三合一 summary；均带 disclaimer） |
 
-## 七、已知限制（如实记录）
+## 七、重构亮点（个人重写过程中的设计取舍）
+
+本项目基于作者在企业投标业务中的真实经历**独立重写**（代码、架构、测试全部个人实现）。重写时相比最初版本的主要改进：
+
+| 改进点 | 原设计的痛点 | 本项目的做法 |
+|---|---|---|
+| **确定性优先于 LLM** | 生成结果靠"看效果"把关 | 规则引擎解析评分表、四状态匹配、确定性校验器兜底——LLM 只负责语言组织，判断与校验全部可复现、可测试 |
+| **证据即产品** | 引用是事后补的装饰 | 每条需求四元溯源（文件/页码/章节路径/块号），生成只允许消费证据池内容，`【待确认】`原位标注未证实数字 |
+| **降级不撒谎** | 组件挂了要么报错要么静默 | Milvus → SQLite 暴力余弦、BGE → FakeEmbedding、LLM → Mock，全部透明标识 engine/backend，离线可完整演示 |
+| **存储层分层** | 单文件 1100+ 行难以维护 | 拆为 `db.py`（连接/CRUD）+ `db_mappers.py`（ORM 映射 Mixin）+ `db_schema.py`（DDL/种子），对外 API 不变 |
+| **部署即演示** | 演示依赖本机 Python/Node 环境 | Docker 多阶段构建 + compose 三容器（后端/前端 nginx/init），`docker compose up` 30 秒可跑通全流程 |
+| **测试隔离** | 测试碰真实 LLM/向量库，慢且不确定 | pytest 默认离线（FakeLLM/FakeEmbedding），llm/milvus 标记显式开启；样例数据入库保证确定性 |
+
+## 八、已知限制（如实记录）
 
 - docx 无页码信息（Word 页面属于渲染层），docx 来源需求/能力卡的出处锚点以**章节路径 + 块号**为准；PDF 才锚定页码（docx 能力卡 source_page 恒为空，不采信 LLM 臆测页码）
 - 扫描件 OCR 依赖 PaddleOCR（可选安装），未安装时管线优雅降级为"检测标记 + 待 OCR"
@@ -323,7 +351,7 @@ M7（企业级能力，`/api/auth` + `/api/admin` + `/api/projects` + `/api/know
 - M7 监控：llm_calls 仅增强 LLM 客户端（配置真实 LLM_API_KEY）落库，MockLLM 不记录调用（离线口径恒 0）；trace/span 写库失败不影响业务本体（旁路）
 - M7 评估：评估数字为 BidForge 内部离线评估集口径（T-M3 基线 + 样例文件），不代表通用准确率；每个评估响应均带 disclaimer
 
-## 八、惯例与纪律
+## 九、惯例与纪律
 
 - 真实 API Key 只存在于 gitignored 的 `.env`；入库模板是 `.env.example`（占位 Key）
 - commit 前必须复核 `.env` 不在暂存清单

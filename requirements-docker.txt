@@ -1,0 +1,25 @@
+# ── BidForge 容器运行最小依赖（Docker 镜像专用）──
+# 说明：sentence-transformers（torch）与 pymilvus 为可选重型依赖，代码内延迟导入，
+#       fake 嵌入 + SQLite 降级模式下无需安装。完整依赖见 requirements.txt。
+# 若需容器内启用真实 BGE 嵌入 / Milvus，请改用 requirements.txt（体积 ~2GB）。
+
+# 招标文件解析（M1）
+pymupdf==1.28.0
+python-docx==1.2.0
+openpyxl>=3.1
+pillow>=10.0
+
+# LLM 客户端（OpenAI 兼容协议，DeepSeek）
+openai>=1.40
+
+# HTTP API（端口 8001）
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-dotenv>=1.0
+python-multipart>=0.0.9
+
+# SQLite 向量降级（暴力余弦）
+numpy>=1.26
+
+# M7 认证
+pyjwt==2.10.1
