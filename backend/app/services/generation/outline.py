@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import Optional
 
 from ... import config
@@ -201,8 +202,11 @@ class OutlineBuilder:
             path = d.get("parsed_file") or ""
             if not path:
                 continue
-            p = config.PARSED_DIR / path if not path.startswith(config.DATA_DIR) \
-                else config.DATA_DIR / path
+            # parsed_file 入库为相对文件名（data/parsed/{tender_id}/xxx.json）；
+            # 绝对路径直接使用（兼容历史数据）
+            p = Path(path)
+            if not p.is_absolute():
+                p = config.PARSED_DIR / tender_id / p
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
             except (OSError, ValueError):

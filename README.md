@@ -49,6 +49,7 @@ RAG 在这里只是检索能力，不是项目本身。核心命题是双向结�
 | M3 | 需求-能力匹配（四状态 + 证据链 + 需求响应表） | 2024.11–12 | ✅ 完成 |
 | M4 | 标书生成引擎（大纲/映射/生成器/响应表/组装/任务状态机） | 2025.01–02 | ✅ 完成 |
 | M5 | 标书一致性与质量检查引擎（事实/完整性/一致性/格式检查 + 5 维评分 + 终版闭环） | 2025.03–04 | ✅ 完成 |
+| M6 | 标书工作台（项目/招标/需求/知识库/生成/质检/交付 8 页面 + 全流程聚合 + SSE 实时进度） | 2025.04 | ✅ 完成 |
 
 详见 [ROADMAP.md](ROADMAP.md)。Agent 不是本项目的起点——第四阶段才考虑。
 
@@ -78,10 +79,11 @@ RAG 在这里只是检索能力，不是项目本身。核心命题是双向结�
 │   ├── verify_m3_matching.py    # M3 需求-能力匹配验收核查
 │   ├── verify_m4_generation.py  # M4 标书生成引擎验收核查（章节/覆盖/可追溯/文件）
 │   ├── verify_m5_quality.py     # M5 质量检查引擎验收核查（基线 + 9 组变异 + 终版闭环）
+│   ├── verify_m6_workbench.py   # M6 工作台验收核查（聚合字段/六阶段/SSE/前端文件）
 │   └── probe_milvus.py          # Milvus 兼容性探针（临时集合 spike，不碰既有集合）
-├── tests/                    # M1-M5 离线用例（M5 66 个）+ llm/milvus 标记集成用例
-├── frontend/                 # Vue3 + Vite + Element Plus（脚手架；招标列表/详情页已可用）
-└── docs/                     # 白皮书（M5）
+├── tests/                    # M1-M6 离线用例 + llm/milvus 标记集成用例
+├── frontend/                 # Vue3 + Vite + Element Plus（M6 工作台：8 页面 + 5 组件 + 聚合 + SSE）
+└── docs/                     # 技术白皮书（留待后续）
 ```
 
 ## 五、快速开始
@@ -126,9 +128,12 @@ python scripts/verify_m4_generation.py         # 标书生成引擎（章节/覆
 
 # 9. M5 质量检查端到端（同一 T-M3 验收基线；报告 scripts/_m5_verify_report.txt）
 python scripts/verify_m5_quality.py            # 质量检查引擎（基线 + 9 组变异 + 终版闭环）
+
+# 10. M6 工作台端到端（同一 T-M3 验收基线；报告 scripts/_m6_verify_report.txt）
+python scripts/verify_m6_workbench.py          # 工作台聚合 + 六阶段派生 + SSE + 前端文件
 ```
 
-## 六、API 一览（M1 + M2 + M3 + M4 + M5）
+## 六、API 一览（M1 + M2 + M3 + M4 + M5 + M6）
 
 | 端点 | 说明 |
 |---|---|
@@ -185,6 +190,14 @@ M5（质量检查引擎，`/api/quality`）：
 | `POST /tenders/{id}/finalize` | 终版闭环：CRITICAL/ERROR 未清→409；通过 → final.docx/final.md/quality-report.json + 审计 |
 | `GET /tenders/{id}/final?format=json\|docx\|markdown` | 终版产物读取 |
 
+M6（标书工作台，`/api/workbench` + 生成 SSE）：
+
+| 端点 | 说明 |
+|---|---|
+| `GET /api/workbench/projects` | 项目列表 + 全流程状态聚合（文档统计/匹配分布/章节进度/质量快照/交付标记 + 六阶段状态派生 + KB 全局统计），只读 SQL 聚合不落库 |
+| `GET /api/workbench/projects/{id}` | 单项目概览（+ 文档明细 + 待处理问题前 5 条按严重度排序；未知项目 404） |
+| `GET /api/generation/tenders/{id}/jobs/{job_id}/events` | SSE 流式生成进度（tail generation_logs；job 终态推 `event: done` 关闭流；未知 job/tender 404） |
+
 ## 七、已知限制（如实记录）
 
 - docx 无页码信息（Word 页面属于渲染层），docx 来源需求/能力卡的出处锚点以**章节路径 + 块号**为准；PDF 才锚定页码（docx 能力卡 source_page 恒为空，不采信 LLM 臆测页码）
@@ -196,6 +209,7 @@ M5（质量检查引擎，`/api/quality`）：
 - DOCX 目录为静态目录（python-docx 无原生可更新 TOC 域），页码占位；中文字体已设 eastAsia 宋体防乱码
 - M5 检查（事实/完整性/一致性/格式）：事实区排除需求回显章节（CH-08 响应表、CH-05-4 技术指标表实时回显需求原文，不参与数字/冲突判定）；语义覆盖审查默认关闭（include_llm=true 才跑，需配置 .env 的 LLM_API_KEY，FakeLLM/无 Key 空返回不新增 issue）
 - M5 终版跳过 PDF（final.docx + final.md + quality-report.json 三件套）；quality report 以结构化 JSON 落盘，Markdown 报告另出；PDF 为已知限制，留待后续阶段
+- M6 工作台聚合为只读派生（SQL 聚合 + 六阶段状态由数据派生，不落库）；生成 SSE 断连可回退轮询 job 状态端点；质量工作台"定位章节"按钮跳转生成工作台（不解析章节号精确定位），为有意简化
 
 ## 八、惯例与纪律
 

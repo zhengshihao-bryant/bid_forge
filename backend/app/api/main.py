@@ -26,10 +26,15 @@ app/api/main.py —— FastAPI 应用入口
     GET  /api/matching/tenders/{id}/requirements  规范需求（REQ-C-XXXX）
     GET  /api/matching/tenders/{id}/matches      匹配记录（FULL/PARTIAL/MISSING/UNKNOWN）
     GET  /api/matching/tenders/{id}/response-table  需求响应表（json/markdown）
+    POST /api/generation/tenders/{id}/outline    章节规划 + 需求→章节映射（落库）
+    POST /api/generation/tenders/{id}/jobs       启动后台生成（状态轮询，409 防并发）
+    GET  /api/generation/tenders/{id}/jobs/{job_id}/events  SSE 流式进度
+    PATCH /api/generation/tenders/{id}/sections/{sid}  章节人工编辑（草稿→已编辑）
     POST /api/quality/tenders/{id}/check         质量检查（确定性 + 可选 LLM 语义覆盖）
     GET  /api/quality/tenders/{id}/reports       质量报告列表 / 详情
     PATCH /api/quality/issues/{issue_id}         问题人工处理（已确认/已忽略/已修复）
     POST /api/quality/tenders/{id}/finalize      终版闭环（final.docx + final.md + 报告）
+    GET  /api/workbench/projects[/{id}]          工作台聚合（项目列表 / 单项目概览）
 
 交互式文档（Swagger UI）：http://localhost:8001/docs
 """
@@ -51,6 +56,7 @@ from .routes_knowledge import router as knowledge_router
 from .routes_matching import router as matching_router
 from .routes_quality import router as quality_router
 from .routes_tenders import router as tenders_router
+from .routes_workbench import router as workbench_router
 
 API_VERSION = "0.1.0"
 SERVICE_NAME = "企业标书生成平台 (Bid Generation Platform)"
@@ -74,12 +80,15 @@ app = FastAPI(
     title="企业标书生成平台 API",
     description=(
         "企业级标书 AI 辅助生成平台 HTTP 服务（M1：招标文件解析 + 需求提取；"
-        "M2：企业知识库 + 语义检索）。\n\n"
+        "M2：企业知识库 + 语义检索；M3：需求-能力匹配；M4：标书生成引擎；"
+        "M5：一致性与质量检查；M6：标书工作台）。\n\n"
         "- `POST /api/tenders`：多文件上传（PDF/Word/Excel/图片）→ 解析 → 入库\n"
         "- `POST /api/tenders/{id}/extract`：后台需求提取（LLM，状态轮询）\n"
         "- 需求条目四元溯源（文件/页码/章节路径/块号），人工可修订\n"
         "- `POST /api/knowledge/materials`：企业资料上传（8 类）→ 切块 + 能力卡\n"
         "- `GET /api/knowledge/search`：BGE 语义检索（Milvus 挂自动降级 SQLite）\n"
+        "- `GET /api/workbench/projects`：工作台全流程聚合（六阶段状态派生 + KB 统计）\n"
+        "- `GET /api/generation/tenders/{id}/jobs/{job_id}/events`：SSE 流式生成进度\n"
         "- 未配置 `LLM_API_KEY` 时自动使用 Mock LLM（可离线验证管线）"
     ),
     version=API_VERSION,
@@ -99,6 +108,7 @@ app.include_router(knowledge_router)
 app.include_router(matching_router)
 app.include_router(generation_router)
 app.include_router(quality_router)
+app.include_router(workbench_router)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -111,7 +121,7 @@ def service_info() -> dict:
     return {
         "service": SERVICE_NAME,
         "version": API_VERSION,
-        "description": "企业级标书 AI 辅助生成平台（M1：招标文件解析 + 需求提取）",
+        "description": "企业级标书 AI 辅助生成平台（M1–M6：解析→提取→匹配→生成→质检→工作台）",
         "endpoints": {
             "POST /api/tenders": "上传招标文件（PDF/Word/Excel/图片）→ 解析入库",
             "GET /api/tenders": "招标项目列表",
@@ -119,6 +129,8 @@ def service_info() -> dict:
             "GET /api/tenders/{id}/requirements": "需求列表（四元溯源）",
             "POST /api/knowledge/materials": "企业资料上传（8 类）→ 解析入库",
             "GET /api/knowledge/search": "语义检索（Milvus 挂自动降级 SQLite）",
+            "GET /api/workbench/projects": "工作台聚合（六阶段状态 + KB 统计）",
+            "GET /api/generation/tenders/{id}/jobs/{job_id}/events": "SSE 流式生成进度",
         },
         "docs": "/docs",
     }

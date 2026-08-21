@@ -21,9 +21,10 @@ app/api/routes_generation.py —— 标书生成路由（M4）
 from __future__ import annotations
 
 import json
+import time
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from .. import config
 from ..db import Database
@@ -153,6 +154,52 @@ def get_response_table(tender_id: str, format: str = "json") -> dict:
                 "content": builder.to_markdown(tender_id)}
     return {"tender_id": tender_id, "format": "json",
             **json.loads(builder.to_json(tender_id))}
+
+
+@router.get("/tenders/{tender_id}/jobs/{job_id}/events")
+def generation_events(tender_id: str, job_id: str):
+    """SSE 流式进度：tail generation_logs，job 终态时推 done 事件关闭流。
+
+    无历史日志时先发一条 job 当前 progress 快照；前端断连可回退轮询
+    GET /api/generation/tenders/{id}/jobs/{job_id}。
+    """
+    _get_tender_or_404(tender_id)
+    db = _db()
+    job_row = db.query_one("SELECT * FROM generation_jobs WHERE id = ?",
+                           (job_id,))
+    if not job_row or job_row["tender_id"] != tender_id:
+        raise HTTPException(status_code=404, detail="生成任务不存在")
+
+    _TERMINAL = ("已完成", "部分失败", "失败")
+
+    def event_stream():
+        last_id = 0
+        while True:
+            rows = db.query(
+                "SELECT * FROM generation_logs WHERE generation_id = ? "
+                "AND id > ? ORDER BY id", (job_id, last_id))
+            for r in rows:
+                last_id = r["id"]
+                yield ("data: " + json.dumps(r, ensure_ascii=False) + "\n\n")
+            if not last_id:
+                # 尚无日志：先推一条 job 快照，避免客户端空转
+                yield ("event: snapshot\ndata: "
+                       + json.dumps({"status": job_row["status"],
+                                     "progress": job_row["progress"]},
+                                    ensure_ascii=False) + "\n\n")
+            current = db.query_one(
+                "SELECT status FROM generation_jobs WHERE id = ?", (job_id,))
+            if current and current["status"] in _TERMINAL:
+                yield ("event: done\ndata: "
+                       + json.dumps({"status": current["status"]},
+                                    ensure_ascii=False) + "\n\n")
+                break
+            time.sleep(1)
+
+    return StreamingResponse(
+        event_stream(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache",
+                 "X-Accel-Buffering": "no"})
 
 
 # ═══════════════════════════════════════════════════════════════════════

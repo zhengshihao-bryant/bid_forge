@@ -78,6 +78,21 @@
 - 技术白皮书（docs/whitepaper/）+ CHANGELOG + tag v1.0.0 封版推送留待后续
 - 口径声明：以上结果基于项目内置验收基线（与 tests/test_m3_matcher.py 同源）与离线确定性生成路径；score 为 BidForge 内部质量指标（按问题严重度扣分的 5 维公式），不代表通用准确率
 
+### M6 标书工作台（2025.03–04）✅ 已完成
+
+口径：工作台是 M1–M5 五条管线的统一操作面；聚合为**只读派生**（SQL 聚合 + 六阶段状态派生，不落库）；生成进度走 SSE 只读流；前端为 Vue3 工作台（8 页面），交互验收首次进入里程碑（浏览器抽查 3 个关键页面）。
+
+- [x] 工作台聚合端点：`GET /api/workbench/projects`（项目列表 + 文档统计/匹配分布/章节进度/质量快照/交付标记 + KB 全局统计）+ `GET /api/workbench/projects/{id}`（单项目概览 + 文档明细 + 待处理问题前 5 条按严重度排序，未知项目 404）
+- [x] 六阶段状态派生：docs/extract/kb/match/generate/quality 由数据派生（pending/in_progress/done/warning/error + summary 直出），供前端画阶段进度条
+- [x] 生成 SSE：`GET /api/generation/tenders/{id}/jobs/{job_id}/events` —— tail generation_logs、终态推 `event: done` 关闭流、无历史日志先推 job 快照、未知 job/tender 404；前端 fetch + ReadableStream 解析 + 断连回退轮询
+- [x] 前端工作台 8 页面（M6-01~07）：项目列表/单项目概览/招标文件/需求分析/知识库/标书生成/质量检查/最终交付 + 5 组件（证据链/Markdown 渲染/项目导航/章节树/阶段步骤）+ 8 路由（旧入口兼容重定向）+ workbench store（进行中任务自动轮询）；全部真实接线 client.ts，无 mock
+- [x] 测试：tests/test_m6_workbench.py 5 个（聚合 3 + SSE 1 + 回归 1）
+- **验收**（2026-08-18 实测，报告 `scripts/_m6_verify_report.txt`）：HTTP 端到端 **30/30 项全 OK** —— 项目列表聚合（T-M3：文档 3/2/1、匹配 17/6/5/5、生成 26/26 章节、质量快照 88.5 分 1 待处理、交付 finalized=False）；六阶段派生 6/6；KB 统计 8/8/9 张能力卡；单项目概览 + 未知项目 404；SSE 已完成 job 推历史日志 + done 关闭流 + 404/404；前端文件核查（8 页面/5 组件/8 路由/store）。前端 vue-tsc + vite build 通过；浏览器抽查 3 个关键页面（项目列表/概览/生成工作台）DOM 断言 **15/15** + 无控制台错误。验收中发现并修复 1 个缺陷：`load_tender_doc_sections` 以 `str.startswith(WindowsPath)` 抛 TypeError（M4 时 documents 无行未触发，M6 种子补 documents 行暴露），且相对 parsed_file 缺 `PARSED_DIR/{tender_id}/` 前缀（已对齐 M1 入库口径），修复带回归测试 `test_outline_with_documents_rows`
+- 已知限制：工作台聚合为只读派生不落库；SSE 断连回退轮询 job 状态端点；质量工作台"定位章节"跳转生成工作台不解析章节号精确定位（有意简化）；离线 MockLLM 口径下 canonical=34（含 1 条评分细则 REQ-C-0034）而 matches=33 —— 评分细则天然排除为设计行为
+- 测试回归：全量离线套件 **248 passed / 0 failed**（llm/milvus 标记 10 个默认跳过）；outline 修复后对受影响 M4/M5/M6 套件定向复跑 **64 passed**
+- 技术白皮书（docs/whitepaper/）留待后续
+- 口径声明：以上结果基于项目内置 T-M3 验收基线（种子嵌入后端 bge）与离线确定性路径；前端抽查为 3 个关键页面的 DOM 级断言，不代表全量交互验收
+
 ## 阶段扩展（M5 之后，对应需求分析第二~四阶段）
 
 - 第二阶段：需求自动分类、历史标书复用、引用来源强化
