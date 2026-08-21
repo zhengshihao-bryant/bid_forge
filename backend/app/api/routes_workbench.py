@@ -130,14 +130,14 @@ def _project_summary(db: Database, tender: dict, kb: dict) -> dict:
     mrun = db.query_one("SELECT * FROM matching_runs WHERE tender_id = ?", (tid,)) or {}
     job = db.query_one(
         "SELECT * FROM generation_jobs WHERE tender_id = ? "
-        "ORDER BY created_at DESC, id DESC LIMIT 1", (tid,)) or {}
+        "ORDER BY rowid DESC LIMIT 1", (tid,)) or {}
     secs = db.query_one(
         "SELECT COUNT(*) AS total, "
         "SUM(CASE WHEN status = '已完成' THEN 1 ELSE 0 END) AS done "
         "FROM generation_sections WHERE tender_id = ?", (tid,)) or {}
     report = db.query_one(
         "SELECT * FROM quality_reports WHERE tender_id = ? "
-        "ORDER BY created_at DESC, id DESC LIMIT 1", (tid,)) or {}
+        "ORDER BY rowid DESC LIMIT 1", (tid,)) or {}
     pending = db.query_one(
         "SELECT COUNT(*) AS n FROM quality_issues "
         "WHERE tender_id = ? AND status = '待处理'", (tid,)) or {}

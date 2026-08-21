@@ -68,9 +68,12 @@ class GenerationJobRunner:
         return Database.row_to_job(row) if row else None
 
     def latest_job(self, tender_id: str) -> Optional[GenerationJob]:
+        # 排序用 rowid（SQLite 隐式自增插入序）：id 为 uuid 随机串，
+        # created_at 同秒时 ORDER BY created_at DESC, id DESC 会随机选错任务
+        # （CI 3.10 实测 test_jobs_endpoint_conflict_while_running 偶发 202≠409）。
         row = self.db.query_one(
             "SELECT * FROM generation_jobs WHERE tender_id = ? "
-            "ORDER BY created_at DESC, id DESC LIMIT 1", (tender_id,))
+            "ORDER BY rowid DESC LIMIT 1", (tender_id,))
         return Database.row_to_job(row) if row else None
 
     # ------------------------------------------------------------------

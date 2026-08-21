@@ -95,7 +95,7 @@ class QualityRunner:
                            ) -> Optional[tuple[QualityReport, list[QualityIssue]]]:
         row = self.db.query_one(
             "SELECT * FROM quality_reports WHERE tender_id = ? "
-            "ORDER BY created_at DESC, id DESC LIMIT 1", (tender_id,))
+            "ORDER BY rowid DESC LIMIT 1", (tender_id,))
         if not row:
             return None
         report = Database.row_to_report(row)

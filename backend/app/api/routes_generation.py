@@ -263,7 +263,7 @@ def list_generation_jobs(tender_id: str) -> dict:
     _get_tender_or_404(tender_id)
     rows = _db().query(
         "SELECT * FROM generation_jobs WHERE tender_id = ? "
-        "ORDER BY created_at DESC, id DESC LIMIT 20", (tender_id,))
+        "ORDER BY rowid DESC LIMIT 20", (tender_id,))
     return {"tender_id": tender_id,
             "jobs": [Database.row_to_job(r).model_dump(mode="json")
                      for r in rows]}

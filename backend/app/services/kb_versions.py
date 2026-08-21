@@ -55,5 +55,5 @@ def record_version(db: Database, change_type: str, changed_by: str = "",
 def latest_kb_label(db: Database) -> str:
     """最新版本 label（生成任务快照用；无任何版本时 "v0"）。"""
     row = db.query_one(
-        "SELECT label FROM knowledge_versions ORDER BY created_at DESC, id DESC LIMIT 1")
+        "SELECT label FROM knowledge_versions ORDER BY rowid DESC LIMIT 1")
     return (row or {}).get("label") or "v0"
