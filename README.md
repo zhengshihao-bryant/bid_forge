@@ -1,5 +1,6 @@
 # 企业标书生成平台（BidForge · Bid Generation Platform）
 
+![CI](https://github.com/zhengshihao-bryant/bid_forge/actions/workflows/ci.yml/badge.svg)
 ![Python](https://img.shields.io/badge/Python-3.10%20%7C%203.11-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688?logo=fastapi&logoColor=white)
 ![Vue 3](https://img.shields.io/badge/Vue_3-Vite%20%2B%20Element%20Plus-4FC08D?logo=vuedotjs&logoColor=white)
