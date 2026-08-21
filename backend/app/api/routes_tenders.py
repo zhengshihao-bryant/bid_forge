@@ -18,14 +18,18 @@ import json
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
+from fastapi import (APIRouter, BackgroundTasks, Depends, File, Form,
+                     HTTPException, UploadFile)
 from pydantic import BaseModel
 
 from .. import config
+from ..auth.audit import record_audit
+from ..auth.deps import get_current_user, require_permission
 from ..db import Database
 from ..parsers import SUPPORTED_EXTENSIONS, parse_file
 from ..schemas import RequirementType, now_str
 from ..services.extraction import run_extraction_task
+from ..services.task_tracker import create_task
 
 router = APIRouter(prefix="/api/tenders", tags=["招标项目"])
 
@@ -45,12 +49,18 @@ class RequirementPatch(BaseModel):
 # ═══════════════════════════════════════════════════════════════════════
 # 创建 / 列表 / 详情
 # ═══════════════════════════════════════════════════════════════════════
-@router.post("", status_code=201)
+@router.post("", status_code=201,
+             dependencies=[Depends(require_permission("tender_doc", "upload"))])
 def create_tender(
     files: list[UploadFile] = File(...),
     name: str = Form(""),
+    user: dict = Depends(get_current_user),
 ) -> dict:
-    """多文件上传 → 逐文件解析 → 入库。单个文件解析失败不阻塞整单（记录 parse_error）。"""
+    """多文件上传 → 逐文件解析 → 入库。单个文件解析失败不阻塞整单（记录 parse_error）。
+
+    M7：建单人自动成为项目 owner（project_members），普通员工须被添加为
+    成员后才能查看该项目的终版（final:* 资源强制成员校验）。
+    """
     if not files:
         raise HTTPException(status_code=400, detail="至少上传一个文件")
 
@@ -66,6 +76,12 @@ def create_tender(
         "name": name.strip() or Path(files[0].filename or "招标文件").stem,
         "created_at": now_str(),
         "extraction_status": "未提取",
+        "owner_id": user["id"],
+    })
+    # M7-02：建单人 = owner（成员行与建单同事务语义：同步紧接写入）
+    db.insert("project_members", {
+        "project_id": tender_id, "user_id": user["id"], "role": "owner",
+        "created_at": now_str(),
     })
 
     results = []
@@ -135,23 +151,30 @@ def create_tender(
             "error": parse_error,
         })
 
+    record_audit(db, user, "upload_tender", "project", tender_id,
+                 detail=f"文件数={len(files)} 成功={sum(1 for r in results if r['ok'])}")
     return {"id": tender_id, "name": name.strip() or "招标项目",
             "results": results}
 
 
-@router.get("")
+@router.get("",
+            dependencies=[Depends(require_permission("project", "view"))])
 def list_tenders() -> list[dict]:
     db = Database(config.DB_PATH)
     rows = db.query("SELECT * FROM tenders ORDER BY created_at DESC")
     return [_tender_dict(r) for r in rows]
 
 
-@router.get("/{tender_id}")
-def get_tender(tender_id: str) -> dict:
+@router.get("/{tender_id}",
+            dependencies=[Depends(require_permission("project", "view"))])
+def get_tender(tender_id: str,
+               user: dict = Depends(get_current_user)) -> dict:
     db = Database(config.DB_PATH)
     tender = db.query_one("SELECT * FROM tenders WHERE id = ?", (tender_id,))
     if not tender:
         raise HTTPException(status_code=404, detail="招标项目不存在")
+    record_audit(db, user, "view_tender_doc", "tender", tender_id,
+                 detail=tender["name"])
     docs = db.query("SELECT * FROM documents WHERE tender_id = ? ORDER BY created_at", (tender_id,))
     detail = _tender_dict(tender)
     detail["documents"] = []
@@ -190,9 +213,14 @@ def _tender_dict(row: dict) -> dict:
 # ═══════════════════════════════════════════════════════════════════════
 # 需求提取 / 需求列表 / 人工修订 / 评分点
 # ═══════════════════════════════════════════════════════════════════════
-@router.post("/{tender_id}/extract", status_code=202)
-def extract_requirements(tender_id: str, background_tasks: BackgroundTasks) -> dict:
-    """启动后台需求提取（200 页文档分钟级耗时，不阻塞请求）。状态轮询 GET /{id}。"""
+@router.post("/{tender_id}/extract", status_code=202,
+             dependencies=[Depends(require_permission("tender_doc", "upload"))])
+def extract_requirements(tender_id: str, background_tasks: BackgroundTasks,
+                         user: dict = Depends(get_current_user)) -> dict:
+    """启动后台需求提取（200 页文档分钟级耗时，不阻塞请求）。状态轮询 GET /{id}。
+
+    M7-05：任务中心登记（extract；started_by=当前用户）。
+    """
     db = Database(config.DB_PATH)
     tender = db.query_one("SELECT * FROM tenders WHERE id = ?", (tender_id,))
     if not tender:
@@ -204,12 +232,16 @@ def extract_requirements(tender_id: str, background_tasks: BackgroundTasks) -> d
     if not docs or docs[0]["n"] == 0:
         raise HTTPException(status_code=400, detail="该招标项目没有解析成功的文档")
     db.update("tenders", "id", tender_id, {"extraction_status": "提取中"})
-    background_tasks.add_task(run_extraction_task, tender_id)
+    task = create_task(db, "extract", target_id=tender_id,
+                       started_by=user["id"])
+    background_tasks.add_task(run_extraction_task, tender_id, task["id"])
     return {"tender_id": tender_id, "extraction_status": "提取中",
+            "task_id": task["id"],
             "hint": "轮询 GET /api/tenders/{id} 查看 extraction_status / extraction_progress"}
 
 
-@router.get("/{tender_id}/requirements")
+@router.get("/{tender_id}/requirements",
+            dependencies=[Depends(require_permission("project", "view"))])
 def list_requirements(
     tender_id: str,
     type: str | None = None,
@@ -239,8 +271,10 @@ def list_requirements(
             for r in db.query(sql, tuple(params))]
 
 
-@router.patch("/{tender_id}/requirements/{req_id}")
-def patch_requirement(tender_id: str, req_id: str, patch: RequirementPatch) -> dict:
+@router.patch("/{tender_id}/requirements/{req_id}",
+              dependencies=[Depends(require_permission("project", "edit"))])
+def patch_requirement(tender_id: str, req_id: str, patch: RequirementPatch,
+                      user: dict = Depends(get_current_user)) -> dict:
     """人工修订（title/type/importance/status/response），任何修订都置 human_confirmed。"""
     db = Database(config.DB_PATH)
     row = db.query_one(
@@ -272,11 +306,14 @@ def patch_requirement(tender_id: str, req_id: str, patch: RequirementPatch) -> d
     values["human_confirmed"] = 1
     values["updated_at"] = now_str()
     db.update("requirements", "id", req_id, values)
+    record_audit(db, user, "edit_requirement", "requirement", req_id,
+                 detail=f"tender_id={tender_id} 修改字段={','.join(sorted(values))}")
     return Database.row_to_requirement(
         db.query_one("SELECT * FROM requirements WHERE id = ?", (req_id,))).model_dump(mode="json")
 
 
-@router.get("/{tender_id}/score-points")
+@router.get("/{tender_id}/score-points",
+            dependencies=[Depends(require_permission("project", "view"))])
 def list_score_points(tender_id: str) -> list[dict]:
     db = Database(config.DB_PATH)
     if not db.query_one("SELECT id FROM tenders WHERE id = ?", (tender_id,)):

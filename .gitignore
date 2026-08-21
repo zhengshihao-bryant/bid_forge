@@ -38,3 +38,6 @@ frontend/dist/
 # IDE
 .idea/
 .vscode/
+
+# 本机运行日志
+*.log

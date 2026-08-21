@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from .. import config
+from ..auth.deps import get_current_user, has_permission
 from ..db import Database
 
 router = APIRouter(prefix="/api/workbench", tags=["工作台"])
@@ -168,23 +169,62 @@ def _project_summary(db: Database, tender: dict, kb: dict) -> dict:
 # ═══════════════════════════════════════════════════════════════════════
 # 项目列表 / 单项目概览
 # ═══════════════════════════════════════════════════════════════════════
+# M7-02（步骤 4.5）：workbench 只要求登录（不挂 project:view），响应按角色
+# 过滤——无 project:view 的用户（普通员工）只看到自己为成员的项目，且字段
+# 裁剪为交付相关（id/name/created_at/delivery/quality），保证"我的交付"入口
+# 可达；其余角色全量视图不变。
+_DELIVERY_FIELDS = ("id", "name", "created_at", "delivery", "quality")
+
+
+def _visible_projects(db: Database, user: dict) -> list[dict]:
+    if has_permission(user, "project", "view"):
+        return db.query("SELECT * FROM tenders ORDER BY created_at DESC")
+    return db.query(
+        "SELECT t.* FROM tenders t JOIN project_members pm "
+        "ON pm.project_id = t.id WHERE pm.user_id = ? "
+        "ORDER BY t.created_at DESC", (user["id"],))
+
+
+def _trim_for_delivery(summary: dict) -> dict:
+    return {k: summary[k] for k in _DELIVERY_FIELDS if k in summary}
+
+
 @router.get("/projects")
-def list_projects() -> dict:
-    """项目列表 + 全流程状态聚合（工作台首页卡片数据源）。"""
+def list_projects(user: dict = Depends(get_current_user)) -> dict:
+    """项目列表 + 全流程状态聚合（工作台首页卡片数据源；按角色可见性过滤）。"""
     db = _db()
     kb = _kb_stats(db)
-    rows = db.query("SELECT * FROM tenders ORDER BY created_at DESC")
-    return {"kb": kb,
-            "projects": [_project_summary(db, r, kb) for r in rows]}
+    full_view = has_permission(user, "project", "view")
+    projects = []
+    for r in _visible_projects(db, user):
+        summary = _project_summary(db, r, kb)
+        projects.append(summary if full_view else _trim_for_delivery(summary))
+    return {"kb": kb, "projects": projects,
+            "delivery_only": not full_view}
 
 
 @router.get("/projects/{tender_id}")
-def project_overview(tender_id: str) -> dict:
-    """单项目概览：全流程聚合 + 文档明细 + 待处理问题前 5 条。"""
+def project_overview(tender_id: str,
+                     user: dict = Depends(get_current_user)) -> dict:
+    """单项目概览：全流程聚合 + 文档明细 + 待处理问题前 5 条。
+
+    无 project:view 的用户必须是该项目成员（否则 404 防存在性泄露），
+    且响应裁剪为交付视图（无文档明细/问题列表）。
+    """
     tender = _get_tender_or_404(tender_id)
+    full_view = has_permission(user, "project", "view")
+    if not full_view:
+        member = _db().query_one(
+            "SELECT 1 AS x FROM project_members "
+            "WHERE project_id = ? AND user_id = ?", (tender_id, user["id"]))
+        if not member:
+            raise HTTPException(status_code=404, detail="招标项目不存在")
     db = _db()
     kb = _kb_stats(db)
     summary = _project_summary(db, tender, kb)
+    if not full_view:
+        summary["kb"] = kb
+        return _trim_for_delivery(summary)
     docs = [{
         "id": d["id"], "file_name": d["file_name"], "file_type": d["file_type"],
         "total_pages": d["total_pages"], "char_count": d["char_count"],

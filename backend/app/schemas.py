@@ -335,6 +335,8 @@ class Capability(BaseModel):
     description: str = ""
     source_doc: str = ""                   # 来源文件
     source_page: Optional[int] = None
+    version: int = 1                       # M7 起：能力卡版本（人工修订 +1）
+    updated_at: str = ""                   # M7 起：最近修订时间
     created_at: str = Field(default_factory=now_str)
 
 

@@ -33,3 +33,7 @@ numpy>=1.26          # SqliteVectorStore 暴力余弦降级路径
 
 # ── M4 引入（Word 导出）──
 # docxtpl>=0.16
+
+# ── M7 引入（企业级能力：认证 / RBAC / 审计）──
+# 钉 2.10.1：本机 mcp 工具链要求 pyjwt>=2.10.1，避免降级破坏 Claude Code 环境
+pyjwt==2.10.1

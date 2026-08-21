@@ -17,12 +17,15 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from .. import config
+from ..auth.audit import record_audit
+from ..auth.deps import get_current_user, require_permission
 from ..db import Database
 from ..services.matching.pipeline import run_matching_task
 from ..services.matching.report import ResponseTableBuilder
+from ..services.task_tracker import create_task
 
 router = APIRouter(prefix="/api/matching", tags=["需求匹配"])
 
@@ -54,11 +57,14 @@ def _run_dict(row: dict) -> dict:
 # ═══════════════════════════════════════════════════════════════════════
 # 匹配任务
 # ═══════════════════════════════════════════════════════════════════════
-@router.post("/tenders/{tender_id}/match", status_code=202)
-def start_matching(tender_id: str, background_tasks: BackgroundTasks) -> dict:
+@router.post("/tenders/{tender_id}/match", status_code=202,
+             dependencies=[Depends(require_permission("project", "edit"))])
+def start_matching(tender_id: str, background_tasks: BackgroundTasks,
+                   user: dict = Depends(get_current_user)) -> dict:
     """启动后台匹配：标准化 → 逐条匹配 → 判定 → 落库。
 
     状态轮询 GET /api/matching/tenders/{id}（status: 未匹配/匹配中/已完成/失败）。
+    M7-05：任务中心登记（match；started_by=当前用户）。
     """
     _get_tender_or_404(tender_id)
     db = _db()
@@ -70,12 +76,16 @@ def start_matching(tender_id: str, background_tasks: BackgroundTasks) -> dict:
         "SELECT COUNT(*) AS n FROM requirements WHERE tender_id = ?", (tender_id,))
     if not reqs["n"]:
         raise HTTPException(status_code=400, detail="该招标项目没有提取出的需求（请先跑 M1 提取）")
-    background_tasks.add_task(run_matching_task, tender_id)
+    task = create_task(db, "match", target_id=tender_id,
+                       started_by=user["id"])
+    background_tasks.add_task(run_matching_task, tender_id, task["id"])
     return {"tender_id": tender_id, "status": "匹配中",
+            "task_id": task["id"],
             "hint": "轮询 GET /api/matching/tenders/{id} 查看 status / progress"}
 
 
-@router.get("/tenders/{tender_id}")
+@router.get("/tenders/{tender_id}",
+            dependencies=[Depends(require_permission("project", "view"))])
 def matching_status(tender_id: str) -> dict:
     """匹配运行状态（matching_runs 表；未跑过 → 未匹配）。"""
     _get_tender_or_404(tender_id)
@@ -89,7 +99,8 @@ def matching_status(tender_id: str) -> dict:
 # ═══════════════════════════════════════════════════════════════════════
 # 查询：规范需求 / 匹配记录 / 证据链
 # ═══════════════════════════════════════════════════════════════════════
-@router.get("/tenders/{tender_id}/requirements")
+@router.get("/tenders/{tender_id}/requirements",
+            dependencies=[Depends(require_permission("project", "view"))])
 def list_canonical_requirements(tender_id: str, include_scoring: bool = Query(False)) -> dict:
     """规范需求列表（REQ-C-XXXX；默认不含评分细则）。"""
     _get_tender_or_404(tender_id)
@@ -104,7 +115,8 @@ def list_canonical_requirements(tender_id: str, include_scoring: bool = Query(Fa
             "requirements": [c.model_dump(mode="json") for c in canonicals]}
 
 
-@router.get("/tenders/{tender_id}/matches")
+@router.get("/tenders/{tender_id}/matches",
+            dependencies=[Depends(require_permission("project", "view"))])
 def list_matches(tender_id: str, status: str | None = Query(None)) -> dict:
     """匹配记录列表（MAT-XXXX；可按 FULL/PARTIAL/MISSING/UNKNOWN 过滤）。"""
     _get_tender_or_404(tender_id)
@@ -127,8 +139,10 @@ def list_matches(tender_id: str, status: str | None = Query(None)) -> dict:
             "matches": [m.model_dump(mode="json") for m in matches]}
 
 
-@router.get("/tenders/{tender_id}/matches/{match_id}")
-def match_detail(tender_id: str, match_id: str) -> dict:
+@router.get("/tenders/{tender_id}/matches/{match_id}",
+            dependencies=[Depends(require_permission("project", "view"))])
+def match_detail(tender_id: str, match_id: str,
+                 user: dict = Depends(get_current_user)) -> dict:
     """单条匹配详情：判定 + 冲突 + 证据明细 + 证据链（M3-14 可追溯）。"""
     _get_tender_or_404(tender_id)
     db = _db()
@@ -137,6 +151,8 @@ def match_detail(tender_id: str, match_id: str) -> dict:
         (tender_id, match_id))
     if not row:
         raise HTTPException(status_code=404, detail="匹配记录不存在")
+    record_audit(db, user, "view_evidence", "match", match_id,
+                 detail=f"tender_id={tender_id}")
     match = db.row_to_match(row)
     evidences = [db.row_to_evidence(r) for r in db.query(
         "SELECT * FROM evidences WHERE requirement_id = ? ORDER BY id",
@@ -155,7 +171,8 @@ def match_detail(tender_id: str, match_id: str) -> dict:
 # ═══════════════════════════════════════════════════════════════════════
 # 需求响应表（M3-15）
 # ═══════════════════════════════════════════════════════════════════════
-@router.get("/tenders/{tender_id}/response-table")
+@router.get("/tenders/{tender_id}/response-table",
+            dependencies=[Depends(require_permission("project", "view"))])
 def response_table(tender_id: str, format: str = Query("json")) -> dict:
     """需求响应表：format=json（默认，结构化）或 format=markdown（文档形态）。"""
     _get_tender_or_404(tender_id)

@@ -23,14 +23,17 @@ from __future__ import annotations
 import json
 import time
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 
 from .. import config
+from ..auth.audit import record_audit
+from ..auth.deps import get_current_user, require_permission
 from ..db import Database
 from ..schemas import now_str
 from ..services.generation import OutlineBuilder, run_generation_task, \
     tree_from_flat
+from ..services.task_tracker import create_task
 
 router = APIRouter(prefix="/api/generation", tags=["标书生成"])
 
@@ -59,8 +62,10 @@ def _section_tree(db: Database, tender_id: str) -> list:
 # ═══════════════════════════════════════════════════════════════════════
 # M4-01 标书结构规划
 # ═══════════════════════════════════════════════════════════════════════
-@router.post("/tenders/{tender_id}/outline")
-def create_outline(tender_id: str) -> dict:
+@router.post("/tenders/{tender_id}/outline",
+             dependencies=[Depends(require_permission("bid", "generate"))])
+def create_outline(tender_id: str,
+                   user: dict = Depends(get_current_user)) -> dict:
     """seed 默认大纲 → 实例化章节树 → 落库 generation_sections（重跑幂等）。"""
     _get_tender_or_404(tender_id)
     db = _db()
@@ -81,6 +86,8 @@ def create_outline(tender_id: str) -> dict:
     from ..services.generation import RequirementSectionMapper
     stats = RequirementSectionMapper(db).map_all(tender_id)
 
+    record_audit(db, user, "generate_outline", "tender", tender_id,
+                 detail=f"outline_id={outline_id} 章节数={len(OutlineBuilder.flatten(tree))}")
     return {"tender_id": tender_id, "outline_id": outline_id,
             "total_sections": len(OutlineBuilder.flatten(tree)),
             "mapped_requirements": stats.mapped,
@@ -88,7 +95,8 @@ def create_outline(tender_id: str) -> dict:
             "sections": [s.model_dump(mode="json") for s in tree]}
 
 
-@router.get("/tenders/{tender_id}/outline")
+@router.get("/tenders/{tender_id}/outline",
+            dependencies=[Depends(require_permission("bid", "view"))])
 def get_outline(tender_id: str) -> dict:
     """章节树（含状态）。未规划过 → 404 提示先 POST /outline。"""
     _get_tender_or_404(tender_id)
@@ -104,7 +112,8 @@ def get_outline(tender_id: str) -> dict:
 # ═══════════════════════════════════════════════════════════════════════
 # M4-02 需求→章节覆盖统计
 # ═══════════════════════════════════════════════════════════════════════
-@router.get("/tenders/{tender_id}/coverage")
+@router.get("/tenders/{tender_id}/coverage",
+            dependencies=[Depends(require_permission("bid", "view"))])
 def get_coverage(tender_id: str) -> dict:
     """需求→章节覆盖统计（total/mapped/unmapped/by_section/unmapped_reqs）。"""
     _get_tender_or_404(tender_id)
@@ -122,7 +131,8 @@ def get_coverage(tender_id: str) -> dict:
 # ═══════════════════════════════════════════════════════════════════════
 # M4-06 章节草稿明细
 # ═══════════════════════════════════════════════════════════════════════
-@router.get("/tenders/{tender_id}/sections/{section_id}")
+@router.get("/tenders/{tender_id}/sections/{section_id}",
+            dependencies=[Depends(require_permission("bid", "view"))])
 def get_section(tender_id: str, section_id: str) -> dict:
     """章节草稿明细（paragraphs/coverage/evidence_refs/warnings/content_md）。"""
     _get_tender_or_404(tender_id)
@@ -142,7 +152,8 @@ def get_section(tender_id: str, section_id: str) -> dict:
 # ═══════════════════════════════════════════════════════════════════════
 # M4-07 需求响应表
 # ═══════════════════════════════════════════════════════════════════════
-@router.get("/tenders/{tender_id}/response-table")
+@router.get("/tenders/{tender_id}/response-table",
+            dependencies=[Depends(require_permission("bid", "view"))])
 def get_response_table(tender_id: str, format: str = "json") -> dict:
     """三列需求响应表：?format=json|markdown。"""
     _get_tender_or_404(tender_id)
@@ -157,11 +168,15 @@ def get_response_table(tender_id: str, format: str = "json") -> dict:
 
 
 @router.get("/tenders/{tender_id}/jobs/{job_id}/events")
-def generation_events(tender_id: str, job_id: str):
+def generation_events(tender_id: str, job_id: str,
+                      user: dict = Depends(require_permission("bid", "view"))):
     """SSE 流式进度：tail generation_logs，job 终态时推 done 事件关闭流。
 
     无历史日志时先发一条 job 当前 progress 快照；前端断连可回退轮询
     GET /api/generation/tenders/{id}/jobs/{job_id}。
+
+    M7：bid:view 依赖返回值在 handler 签名捕获——SSE 是长连接，权限检查
+    必须在请求进入时执行（依赖随签名参数执行，user 供闭包审计使用）。
     """
     _get_tender_or_404(tender_id)
     db = _db()
@@ -205,9 +220,11 @@ def generation_events(tender_id: str, job_id: str):
 # ═══════════════════════════════════════════════════════════════════════
 # M4-10 生成任务状态机
 # ═══════════════════════════════════════════════════════════════════════
-@router.post("/tenders/{tender_id}/jobs", status_code=202)
+@router.post("/tenders/{tender_id}/jobs", status_code=202,
+             dependencies=[Depends(require_permission("bid", "generate"))])
 def start_generation(tender_id: str, background_tasks: BackgroundTasks,
-                     section_id: str = "") -> dict:
+                     section_id: str = "",
+                     user: dict = Depends(get_current_user)) -> dict:
     """启动后台生成任务（?section_id= 传则单章节重生成，否则断点继续全流程）。
 
     状态轮询 GET /api/generation/tenders/{id}/jobs/{job_id}
@@ -227,14 +244,20 @@ def start_generation(tender_id: str, background_tasks: BackgroundTasks,
     if latest and latest.status == "生成中":
         raise HTTPException(status_code=409, detail="该招标项目正在生成中")
     job = runner.create_job(tender_id, section_id=section_id)
+    task = create_task(db, "generate", target_id=tender_id, ref_id=job.id,
+                       started_by=user["id"])
     background_tasks.add_task(run_generation_task, tender_id, job.id,
-                              section_id)
+                              section_id, "", task["id"])
+    record_audit(db, user, "generate_bid", "generation_job", job.id,
+                 detail=f"tender_id={tender_id} section_id={section_id or '全量'}")
     return {"tender_id": tender_id, "job_id": job.id, "status": "生成中",
-            "section_id": section_id or "", "total_sections": job.total_sections,
+            "task_id": task["id"], "section_id": section_id or "",
+            "total_sections": job.total_sections,
             "hint": "轮询 GET /api/generation/tenders/{id}/jobs/{job_id}"}
 
 
-@router.get("/tenders/{tender_id}/jobs")
+@router.get("/tenders/{tender_id}/jobs",
+            dependencies=[Depends(require_permission("bid", "view"))])
 def list_generation_jobs(tender_id: str) -> dict:
     """该招标项目的生成任务列表（最新在前）。"""
     _get_tender_or_404(tender_id)
@@ -246,7 +269,8 @@ def list_generation_jobs(tender_id: str) -> dict:
                      for r in rows]}
 
 
-@router.get("/tenders/{tender_id}/jobs/{job_id}")
+@router.get("/tenders/{tender_id}/jobs/{job_id}",
+            dependencies=[Depends(require_permission("bid", "view"))])
 def get_generation_job(tender_id: str, job_id: str) -> dict:
     """指定生成任务状态 + 章节级进度（section_states）。"""
     _get_tender_or_404(tender_id)
@@ -259,9 +283,11 @@ def get_generation_job(tender_id: str, job_id: str) -> dict:
 
 
 @router.post("/tenders/{tender_id}/sections/{section_id}/regenerate",
-             status_code=202)
+             status_code=202,
+             dependencies=[Depends(require_permission("bid", "regenerate"))])
 def regenerate_section(tender_id: str, section_id: str,
-                       background_tasks: BackgroundTasks) -> dict:
+                       background_tasks: BackgroundTasks,
+                       user: dict = Depends(get_current_user)) -> dict:
     """单章节重新生成（走 job，版本 version+1）。"""
     _get_tender_or_404(tender_id)
     db = _db()
@@ -277,14 +303,20 @@ def regenerate_section(tender_id: str, section_id: str,
     if latest and latest.status == "生成中":
         raise HTTPException(status_code=409, detail="该招标项目正在生成中")
     job = runner.create_job(tender_id, section_id=section_id)
+    task = create_task(db, "generate", target_id=tender_id, ref_id=job.id,
+                       started_by=user["id"])
     background_tasks.add_task(run_generation_task, tender_id, job.id,
-                              section_id)
+                              section_id, "", task["id"])
+    record_audit(db, user, "regenerate_section", "generation_job", job.id,
+                 detail=f"tender_id={tender_id} section_id={section_id}")
     return {"tender_id": tender_id, "job_id": job.id, "section_id": section_id,
-            "status": "生成中"}
+            "task_id": task["id"], "status": "生成中"}
 
 
-@router.patch("/tenders/{tender_id}/sections/{section_id}")
-def edit_section(tender_id: str, section_id: str, body: dict) -> dict:
+@router.patch("/tenders/{tender_id}/sections/{section_id}",
+              dependencies=[Depends(require_permission("bid", "edit"))])
+def edit_section(tender_id: str, section_id: str, body: dict,
+                 user: dict = Depends(get_current_user)) -> dict:
     """人工编辑：改 content_md，draft_status 草稿→已编辑（人工确认由前端/M5 处理）。"""
     _get_tender_or_404(tender_id)
     db = _db()
@@ -301,6 +333,8 @@ def edit_section(tender_id: str, section_id: str, body: dict) -> dict:
     db.update("generation_sections", "section_id", section_id, {
         "content_md": content, "draft_status": "已编辑",
         "updated_at": now_str()})
+    record_audit(db, user, "edit_section", "section", section_id,
+                 detail=f"tender_id={tender_id} 字数={len(content)}")
     return {"tender_id": tender_id, "section_id": section_id,
             "status": row.get("status"), "draft_status": "已编辑"}
 
@@ -308,7 +342,8 @@ def edit_section(tender_id: str, section_id: str, body: dict) -> dict:
 # ═══════════════════════════════════════════════════════════════════════
 # M4-09 文档组装
 # ═══════════════════════════════════════════════════════════════════════
-@router.get("/tenders/{tender_id}/document")
+@router.get("/tenders/{tender_id}/document",
+            dependencies=[Depends(require_permission("bid", "view"))])
 def get_document(tender_id: str, format: str = "markdown"):
     """组装完整标书：?format=markdown|docx（docx 走 FileResponse）。"""
     _get_tender_or_404(tender_id)
@@ -333,7 +368,8 @@ def get_document(tender_id: str, format: str = "markdown"):
             "docx_path": result["docx_path"]}
 
 
-@router.get("/tenders/{tender_id}/logs")
+@router.get("/tenders/{tender_id}/logs",
+            dependencies=[Depends(require_permission("bid", "view"))])
 def get_generation_logs(tender_id: str, limit: int = 50) -> dict:
     """生成日志（按任务倒序，SSE tail 的读源）。"""
     _get_tender_or_404(tender_id)

@@ -20,6 +20,7 @@ from typing import Optional
 from pydantic import BaseModel
 
 from ....config import M3_JUDGE_EVIDENCE
+from ....services.llm import llm_call_context   # M7-06：LLM 调用埋点 caller
 from ..models import Evidence, EvidenceValidation, MatchStatus
 
 logger = logging.getLogger(__name__)
@@ -98,8 +99,9 @@ class LLMJudge:
                                      for i, e in enumerate(pool, 1))
         )
         try:
-            resp = self._client().chat_json(system=_JUDGE_SYSTEM, user=user,
-                                            temperature=0.0)
+            with llm_call_context("match_judge"):
+                resp = self._client().chat_json(system=_JUDGE_SYSTEM, user=user,
+                                                temperature=0.0)
         except Exception as e:  # noqa: BLE001 —— 网络/协议异常回退启发式
             logger.warning("LLM Judge 调用失败: %s", str(e)[:150])
             return None

@@ -21,12 +21,68 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
+from .. import config
+from ..schemas import now_str
+
 logger = logging.getLogger(__name__)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# M7-06 LLM 调用指标（llm_calls 埋点）
+# ═══════════════════════════════════════════════════════════════════════
+_ctx = threading.local()
+
+
+class llm_call_context:
+    """线程局部调用方上下文（栈式）：包住调用点即可让 chat() 埋 caller。
+
+    用法：
+        with llm_call_context("extraction"):
+            client.chat_json(...)
+    """
+
+    def __init__(self, caller: str):
+        self.caller = caller
+
+    def __enter__(self):
+        stack = getattr(_ctx, "stack", None)
+        if stack is None:
+            stack = _ctx.stack = []
+        stack.append(self.caller)
+        return self
+
+    def __exit__(self, *exc):
+        _ctx.stack.pop()
+
+
+def _current_caller() -> str:
+    stack = getattr(_ctx, "stack", None)
+    return stack[-1] if stack else ""
+
+
+def _record_llm_call(caller: str, model: str, usage: Dict[str, int],
+                     duration_ms: int, retries: int, success: int,
+                     finish_reason: str = "", error: str = "") -> None:
+    """写 llm_calls 行（M7-06）。写库异常绝不外抛——监控失败不能打断生成。"""
+    try:
+        from ..db import Database
+        Database(config.DB_PATH).insert("llm_calls", {
+            "caller": caller, "model": model,
+            "prompt_tokens": usage.get("prompt_tokens", 0),
+            "completion_tokens": usage.get("completion_tokens", 0),
+            "total_tokens": usage.get("total_tokens", 0),
+            "duration_ms": duration_ms, "retries": retries,
+            "success": success, "finish_reason": finish_reason,
+            "error": error, "created_at": now_str(),
+        })
+    except Exception as e:  # noqa: BLE001
+        logger.debug("llm_calls 写入失败（不影响主流程）: %s", str(e)[:200])
 
 
 class EnhancedLLMClient:
@@ -73,12 +129,20 @@ class EnhancedLLMClient:
         """调用 LLM 聊天补全（含自动重试）。
 
         Returns: {"content", "model", "usage", "finish_reason"}
+
+        M7-06：重试循环外层埋 llm_calls（一次业务调用 = 一行，含重试次数/
+        耗时/成败；不在 _call 埋——那会把每次重试记成独立调用）。
         """
         last_error: Optional[Exception] = None
+        t0 = time.perf_counter()
+        attempts = 0
+        caller = _current_caller()
 
         for attempt in range(self.max_retries + 1):
+            attempts += 1
             try:
-                return self._call(messages, temperature, max_tokens, response_format)
+                result = self._call(messages, temperature, max_tokens,
+                                    response_format)
             except Exception as e:
                 last_error = e
                 if attempt < self.max_retries and self._is_retryable(e):
@@ -89,7 +153,20 @@ class EnhancedLLMClient:
                     time.sleep(delay)
                 else:
                     break
+            else:
+                _record_llm_call(
+                    caller=caller, model=result.get("model") or self.model,
+                    usage=result.get("usage") or {},
+                    duration_ms=int((time.perf_counter() - t0) * 1000),
+                    retries=attempts - 1, success=1,
+                    finish_reason=result.get("finish_reason") or "")
+                return result
 
+        _record_llm_call(
+            caller=caller, model=self.model, usage={},
+            duration_ms=int((time.perf_counter() - t0) * 1000),
+            retries=attempts - 1, success=0,
+            error=str(last_error)[:300])
         raise last_error or RuntimeError("LLM call failed with unknown error")
 
     def _call(

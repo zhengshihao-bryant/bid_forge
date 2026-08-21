@@ -39,7 +39,10 @@ from .extraction import (
     ExtractionWindow, ProgressCallback, _build_windows, _make_window_from_blocks,
 )
 from .kb_chunking import build_chunks
-from .llm import create_llm_client
+from .kb_versions import record_version
+from .llm import create_llm_client, llm_call_context
+from .task_tracker import (fail_task, start_task, succeed_task,
+                           update_progress)
 from .vector_store import SqliteVectorStore, get_milvus_store
 
 logger = logging.getLogger(__name__)
@@ -200,7 +203,8 @@ class CapabilityExtractor:
             section_path=w.section_path, page_range=page_range, text=w.text)
 
         for _attempt in range(3):
-            resp = self.client.chat_json(_system_prompt(category), user)
+            with llm_call_context("kb_extract"):
+                resp = self.client.chat_json(_system_prompt(category), user)
             stats["llm_calls"] += 1
             if resp is None:
                 stats["retries"] += 1
@@ -304,14 +308,21 @@ def _next_cap_number(db: Database) -> int:
     return max_n + 1
 
 
-def run_kb_task(material_id: str) -> dict:
-    """后台任务入口：清旧数据 → 切块入库 → 嵌入 + upsert（失败仅降级）→ 能力卡提取。"""
+def run_kb_task(material_id: str, task_id: str = "") -> dict:
+    """后台任务入口：清旧数据 → 切块入库 → 嵌入 + upsert（失败仅降级）→ 能力卡提取。
+
+    M7-05：task_id 非空时同步任务中心状态（start/progress/succeed/fail）。
+    M7-04：完成时写 knowledge_versions 行（material_reprocess）——
+    重处理是知识库的版本变更事件，追溯链由此接续。
+    """
     db = Database(config.DB_PATH)
     mat = db.query_one("SELECT * FROM kb_materials WHERE id = ?", (material_id,))
     if not mat:
         logger.error("知识库处理任务：资料不存在 material_id=%s", material_id)
         return {"material_id": material_id, "error": "资料不存在"}
 
+    if task_id:
+        start_task(db, task_id)
     db.update("kb_materials", "id", material_id,
               {"process_status": "处理中", "process_progress": "读取解析产物"})
     try:
@@ -337,6 +348,8 @@ def run_kb_task(material_id: str) -> dict:
         def progress_cb(msg: str, done: int, total: int) -> None:
             db.update("kb_materials", "id", material_id,
                       {"process_progress": f"[{done}/{total}] {msg}"})
+            if task_id:
+                update_progress(db, task_id, done, total, msg)
 
         # 3. 切块入库
         chunks = build_chunks(doc, material_id, file_name, category,
@@ -395,6 +408,13 @@ def run_kb_task(material_id: str) -> dict:
         })
         logger.info("知识库处理完成 material=%s: %d 块 / %d 卡 / 索引 %s",
                     material_id, len(chunks), len(caps), index_status)
+        # M7-04：重处理完成 = 知识库版本变更事件
+        record_version(db, change_type="material_reprocess",
+                       material_id=material_id,
+                       summary=f"file={file_name} {summary}")
+        if task_id:
+            succeed_task(db, task_id, total=len(chunks), done=len(chunks),
+                         progress=summary)
         return {"material_id": material_id, "chunks": len(chunks),
                 "capabilities": len(caps), "index_status": index_status,
                 "stats": cap_stats}
@@ -402,6 +422,8 @@ def run_kb_task(material_id: str) -> dict:
         logger.exception("知识库处理失败 material=%s", material_id)
         db.update("kb_materials", "id", material_id,
                   {"process_status": "失败", "process_progress": str(e)[:500]})
+        if task_id:
+            fail_task(db, task_id, error=str(e))
         return {"material_id": material_id, "error": str(e)}
 
 

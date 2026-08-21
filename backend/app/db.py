@@ -89,7 +89,25 @@ class Database:
     def init_schema(self) -> None:
         with self.connect() as conn:
             conn.executescript(_DDL)
+            self._migrate(conn)
             conn.commit()
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """幂等 ALTER（M7 起）：PRAGMA table_info 检查列存在再加列。
+
+        项目无迁移框架（M1–M6 均只追加新表）；M7 给已有表加列用此
+        检查法（比依赖异常驱动的判断可靠）。
+        """
+        def add_col(table: str, column: str, ddl: str) -> None:
+            cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+        add_col("tenders", "owner_id", "owner_id TEXT NOT NULL DEFAULT ''")
+        add_col("capabilities", "version", "version INTEGER NOT NULL DEFAULT 1")
+        add_col("capabilities", "updated_at", "updated_at TEXT NOT NULL DEFAULT ''")
+        add_col("generation_jobs", "kb_version", "kb_version TEXT NOT NULL DEFAULT ''")
 
     # ------------------------------------------------------------------
     # Requirement ↔ 行 映射（schema ↔ 持久化单一出处）
@@ -247,6 +265,8 @@ class Database:
             "description": cap.description,
             "source_doc": cap.source_doc,
             "source_page": cap.source_page,
+            "version": getattr(cap, "version", 1) or 1,
+            "updated_at": getattr(cap, "updated_at", "") or "",
             "created_at": cap.created_at,
         }
 
@@ -262,6 +282,8 @@ class Database:
             description=row.get("description") or "",
             source_doc=row.get("source_doc") or "",
             source_page=row.get("source_page"),
+            version=row.get("version") or 1,
+            updated_at=row.get("updated_at") or "",
             created_at=row.get("created_at") or now_str(),
         )
 
@@ -512,6 +534,7 @@ class Database:
             "section_states": json.dumps(j.section_states, ensure_ascii=False),
             "total_sections": j.total_sections, "done_sections": j.done_sections,
             "failed_sections": j.failed_sections, "error": j.error,
+            "kb_version": getattr(j, "kb_version", "") or "",
             "created_at": j.created_at, "updated_at": j.updated_at,
         }
 
@@ -529,6 +552,7 @@ class Database:
             done_sections=row.get("done_sections") or 0,
             failed_sections=row.get("failed_sections") or 0,
             error=row.get("error") or "",
+            kb_version=row.get("kb_version") or "",
             created_at=row.get("created_at") or now_str(),
             updated_at=row.get("updated_at") or now_str(),
         )
@@ -971,7 +995,254 @@ CREATE TABLE IF NOT EXISTS review_records (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_review_records_issue ON review_records(issue_id);
+
+-- ═════ M7：企业级能力（认证 / RBAC / 审计 / 版本 / 任务 / 监控）═════
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    email TEXT NOT NULL DEFAULT '',
+    password_hash TEXT NOT NULL,          -- pbkdf2_sha256$600000$<salt hex>$<hash hex>
+    display_name TEXT NOT NULL DEFAULT '',
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS roles (
+    id TEXT PRIMARY KEY,                  -- admin / bid_manager / bid_editor / reviewer / staff
+    name TEXT NOT NULL UNIQUE,            -- 管理员/投标经理/标书编辑/审核人员/普通员工
+    description TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS permissions (
+    id TEXT PRIMARY KEY,                  -- 形如 "project:view"（见 seed_rbac 常量）
+    resource TEXT NOT NULL,
+    action TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_permissions_res ON permissions(resource);
+
+CREATE TABLE IF NOT EXISTS user_roles (
+    user_id TEXT NOT NULL,
+    role_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, role_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_roles_role ON user_roles(role_id);
+
+CREATE TABLE IF NOT EXISTS role_permissions (
+    role_id TEXT NOT NULL,
+    permission_id TEXT NOT NULL,
+    PRIMARY KEY (role_id, permission_id)
+);
+
+-- project_members：项目级成员（owner = 建单人自动写入；final:* 资源强制成员校验）
+CREATE TABLE IF NOT EXISTS project_members (
+    project_id TEXT NOT NULL,             -- tenders.id
+    user_id TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'member',  -- owner / member
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (project_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_project_members_user ON project_members(user_id);
+
+-- audit_logs：操作审计（username 冗余快照，用户改名/删除仍可审计）
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL DEFAULT '',
+    username TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL,
+    resource_type TEXT NOT NULL DEFAULT '',
+    resource_id TEXT NOT NULL DEFAULT '',
+    detail TEXT NOT NULL DEFAULT '',
+    ip TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_user ON audit_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_res ON audit_logs(resource_type, resource_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_time ON audit_logs(created_at);
+
+-- knowledge_versions：知识库版本（能力卡修订 / 资料重处理）
+-- label = "{日期}-v{当日序}"（如 2026-08-18-v3）；生成任务快照 kb_version 引用
+CREATE TABLE IF NOT EXISTS knowledge_versions (
+    id TEXT PRIMARY KEY,                  -- KV-0001 顺序号
+    label TEXT NOT NULL,
+    material_id TEXT NOT NULL DEFAULT '',
+    capability_id TEXT NOT NULL DEFAULT '',
+    change_type TEXT NOT NULL DEFAULT '', -- capability_edit / material_reprocess
+    summary TEXT NOT NULL DEFAULT '',     -- 改动摘要 JSON
+    changed_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_kv_label ON knowledge_versions(label);
+CREATE INDEX IF NOT EXISTS idx_kv_cap ON knowledge_versions(capability_id);
+
+-- tasks：统一任务中心（extract/kb_process/match/generate/quality_check）
+CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    task_type TEXT NOT NULL,
+    target_id TEXT NOT NULL DEFAULT '',   -- tender_id / material_id
+    ref_id TEXT NOT NULL DEFAULT '',      -- generate = generation_jobs.id
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending/running/success/failed/cancelled
+    progress TEXT NOT NULL DEFAULT '',
+    progress_pct INTEGER NOT NULL DEFAULT 0,
+    total INTEGER NOT NULL DEFAULT 0,
+    done INTEGER NOT NULL DEFAULT 0,
+    error TEXT NOT NULL DEFAULT '',
+    started_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    started_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_type ON tasks(task_type);
+
+-- llm_calls：LLM 调用指标（model/tokens/耗时/失败原因；Mock 客户端不记录）
+CREATE TABLE IF NOT EXISTS llm_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    caller TEXT NOT NULL DEFAULT '',      -- extraction/kb_extract/llm_judge/generator/quality_judge
+    model TEXT NOT NULL DEFAULT '',
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    retries INTEGER NOT NULL DEFAULT 0,
+    success INTEGER NOT NULL DEFAULT 1,
+    finish_reason TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_llm_calls_time ON llm_calls(created_at);
+
+-- agent_traces / agent_spans：Agent 链路（用户请求→需求分析→知识检索→生成章节→质量检查）
+CREATE TABLE IF NOT EXISTS agent_traces (
+    id TEXT PRIMARY KEY,
+    task_type TEXT NOT NULL,              -- extract/kb_process/match/generate/quality_check
+    target_id TEXT NOT NULL DEFAULT '',
+    user_id TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'running',  -- running/success/failed
+    started_at TEXT NOT NULL,
+    finished_at TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_traces_type ON agent_traces(task_type);
+
+CREATE TABLE IF NOT EXISTS agent_spans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trace_id TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',  -- running/success/failed
+    detail TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL,
+    finished_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_spans_trace ON agent_spans(trace_id);
 """
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# M7：RBAC 种子（5 角色 + 17 权限 + 矩阵 + 初始用户）
+# ═══════════════════════════════════════════════════════════════════════
+# 权限枚举：resource:action —— 资源 = 项目(招标文件/企业知识库/标书/质量报告/最终版本)
+M7_PERMISSIONS = [
+    ("project:view", "project", "view", "查看项目（列表/详情/需求）"),
+    ("project:edit", "project", "edit", "修订需求/启动匹配等项目中台操作"),
+    ("project:manage", "project", "manage", "项目成员管理"),
+    ("tender_doc:view", "tender_doc", "view", "查看招标文件"),
+    ("tender_doc:upload", "tender_doc", "upload", "上传招标文件/触发提取"),
+    ("knowledge:view", "knowledge", "view", "查看企业知识库"),
+    ("knowledge:upload", "knowledge", "upload", "上传/处理知识库资料"),
+    ("knowledge:edit", "knowledge", "edit", "修改/删除能力卡与资料"),
+    ("bid:view", "bid", "view", "查看章节/大纲/响应表/日志"),
+    ("bid:edit", "bid", "edit", "编辑章节"),
+    ("bid:generate", "bid", "generate", "生成标书（大纲+启动任务）"),
+    ("bid:regenerate", "bid", "regenerate", "单章节重新生成"),
+    ("quality:view", "quality", "view", "查看质量报告/问题"),
+    ("quality:check", "quality", "check", "执行质量检查"),
+    ("quality:confirm", "quality", "confirm", "确认/忽略/修复问题、终版批准"),
+    ("final:view", "final", "view", "查看最终版本（需项目成员）"),
+    ("final:export", "final", "export", "导出终版 docx（需项目成员）"),
+]
+
+_ALL_PERMS = [p[0] for p in M7_PERMISSIONS]
+
+# 5 角色默认权限矩阵（admin 全量；普通员工仅 final:*，且需项目成员——
+# 体现"不同角色看到不同内容"验收点）
+M7_ROLE_PERMISSIONS = {
+    "admin": _ALL_PERMS,
+    "bid_manager": [
+        "project:view", "project:edit", "project:manage",
+        "tender_doc:view", "tender_doc:upload",
+        "knowledge:view", "knowledge:upload", "knowledge:edit",
+        "bid:view", "bid:edit", "bid:generate", "bid:regenerate",
+        "quality:view", "quality:check",
+        "final:view", "final:export",
+    ],
+    "bid_editor": [
+        "project:view", "project:edit",
+        "tender_doc:view",
+        "knowledge:view",
+        "bid:view", "bid:edit", "bid:generate", "bid:regenerate",
+        "quality:view",
+        "final:view", "final:export",
+    ],
+    "reviewer": [
+        "project:view", "project:edit",
+        "tender_doc:view",
+        "knowledge:view",
+        "bid:view",
+        "quality:view", "quality:check", "quality:confirm",
+        "final:view", "final:export",
+    ],
+    "staff": ["final:view", "final:export"],
+}
+
+
+def seed_rbac(db: "Database") -> None:
+    """M7 RBAC 种子（幂等）：roles 空才插角色/权限/矩阵；users 空才建初始用户。
+
+    初始用户：admin（口令 config.ADMIN_PASSWORD，默认 admin123）+ 4 演示用户
+    （manager/editor/reviewer/staff，口令 同名+123，README 记录）。
+    lifespan 在 init_schema 后调用。
+    """
+    if not db.query_one("SELECT 1 AS x FROM roles LIMIT 1"):
+        roles = [
+            ("admin", "管理员", "系统管理员：全部权限"),
+            ("bid_manager", "投标经理", "项目全流程管理：招标文件/知识库/生成/成员"),
+            ("bid_editor", "标书编辑", "标书编写：查看/编辑/生成章节"),
+            ("reviewer", "审核人员", "质量审核：查看报告/确认问题/终版批准"),
+            ("staff", "普通员工", "仅查看最终交付版本（需为项目成员）"),
+        ]
+        for rid, name, desc in roles:
+            db.insert("roles", {"id": rid, "name": name, "description": desc})
+        for pid, resource, action, desc in M7_PERMISSIONS:
+            db.insert("permissions",
+                      {"id": pid, "resource": resource, "action": action,
+                       "description": desc})
+        for rid, perms in M7_ROLE_PERMISSIONS.items():
+            for pid in perms:
+                db.insert("role_permissions",
+                          {"role_id": rid, "permission_id": pid})
+
+    if not db.query_one("SELECT 1 AS x FROM users LIMIT 1"):
+        from .auth.security import hash_password  # 惰性导入防环
+
+        demo = [
+            ("U-ADMIN", config.ADMIN_USERNAME, "管理员", "admin", config.ADMIN_PASSWORD),
+            ("U-MANAGER", "manager", "投标经理", "bid_manager", "manager123"),
+            ("U-EDITOR", "editor", "标书编辑", "bid_editor", "editor123"),
+            ("U-REVIEWER", "reviewer", "审核人员", "reviewer", "reviewer123"),
+            ("U-STAFF", "staff", "普通员工", "staff", "staff123"),
+        ]
+        for uid, uname, dname, rid, pwd in demo:
+            db.insert("users", {
+                "id": uid, "username": uname, "email": "",
+                "password_hash": hash_password(pwd),
+                "display_name": dname, "is_active": 1,
+                "created_at": now_str(), "updated_at": now_str(),
+            })
+            db.insert("user_roles",
+                      {"user_id": uid, "role_id": rid, "created_at": now_str()})
 
 
 def get_db() -> Database:

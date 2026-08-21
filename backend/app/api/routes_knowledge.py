@@ -27,14 +27,18 @@ import shutil
 import uuid
 from pathlib import Path
 
-from fastapi import (APIRouter, BackgroundTasks, File, Form, HTTPException,
-                     Query, UploadFile)
+from fastapi import (APIRouter, BackgroundTasks, Depends, File, Form,
+                     HTTPException, Query, UploadFile)
 
 from .. import config
+from ..auth.audit import record_audit
+from ..auth.deps import get_current_user, require_permission
 from ..db import Database
 from ..parsers import SUPPORTED_EXTENSIONS, parse_file
 from ..schemas import CapabilityCategory, CapabilityPatch, now_str
 from ..services.capability_extractor import run_kb_task
+from ..services.kb_versions import record_version
+from ..services.task_tracker import create_task
 from ..services.vector_store import create_search_service, get_milvus_store
 
 router = APIRouter(prefix="/api/knowledge", tags=["知识库"])
@@ -77,10 +81,12 @@ def _get_material_or_404(material_id: str) -> dict:
 # ═══════════════════════════════════════════════════════════════════════
 # 上传 / 列表 / 详情 / 内容块
 # ═══════════════════════════════════════════════════════════════════════
-@router.post("/materials", status_code=201)
+@router.post("/materials", status_code=201,
+             dependencies=[Depends(require_permission("knowledge", "upload"))])
 def create_material(
     files: list[UploadFile] = File(...),
     category: str = Form(...),
+    user: dict = Depends(get_current_user),
 ) -> dict:
     """多文件上传（同一类别）→ 逐文件落盘 + 同步解析 + 入库。
 
@@ -168,10 +174,13 @@ def create_material(
             "error": parse_error,
         })
 
+    record_audit(db, user, "upload_knowledge", "kb_material", "",
+                 detail=f"category={cat} 文件数={len(files)}")
     return {"category": cat, "results": results}
 
 
-@router.get("/materials")
+@router.get("/materials",
+            dependencies=[Depends(require_permission("knowledge", "view"))])
 def list_materials(
     category: str | None = None,
     status: str | None = None,
@@ -194,9 +203,13 @@ def list_materials(
     return [_material_dict(r) for r in db.query(sql, tuple(params))]
 
 
-@router.get("/materials/{material_id}")
-def get_material(material_id: str) -> dict:
+@router.get("/materials/{material_id}",
+            dependencies=[Depends(require_permission("knowledge", "view"))])
+def get_material(material_id: str,
+                 user: dict = Depends(get_current_user)) -> dict:
     mat = _get_material_or_404(material_id)
+    record_audit(Database(config.DB_PATH), user, "view_knowledge",
+                 "kb_material", material_id, detail=mat["file_name"])
     detail = _material_dict(mat)
     detail["sections"] = []
     if mat["parsed_file"]:
@@ -210,7 +223,8 @@ def get_material(material_id: str) -> dict:
     return detail
 
 
-@router.get("/materials/{material_id}/chunks")
+@router.get("/materials/{material_id}/chunks",
+            dependencies=[Depends(require_permission("knowledge", "view"))])
 def list_chunks(
     material_id: str,
     offset: int = Query(0, ge=0),
@@ -243,11 +257,14 @@ def list_chunks(
 # ═══════════════════════════════════════════════════════════════════════
 # 处理 / 删除
 # ═══════════════════════════════════════════════════════════════════════
-@router.post("/materials/{material_id}/process", status_code=202)
-def process_material(material_id: str, background_tasks: BackgroundTasks) -> dict:
+@router.post("/materials/{material_id}/process", status_code=202,
+             dependencies=[Depends(require_permission("knowledge", "upload"))])
+def process_material(material_id: str, background_tasks: BackgroundTasks,
+                     user: dict = Depends(get_current_user)) -> dict:
     """启动后台处理：切块 → 嵌入 + 向量写入 → 能力卡提取（历史标书跳过卡片）。
 
     状态轮询 GET /materials/{id} 的 process_status / process_progress。
+    M7-05：任务中心登记（kb_process；started_by=当前用户）。
     """
     mat = _get_material_or_404(material_id)
     if mat["process_status"] == "处理中":
@@ -258,13 +275,18 @@ def process_material(material_id: str, background_tasks: BackgroundTasks) -> dic
             detail=f"该资料解析失败，无法处理（{mat['parse_error'] or '无解析产物'}）——请删除后重新上传")
     db = Database(config.DB_PATH)
     db.update("kb_materials", "id", material_id, {"process_status": "处理中"})
-    background_tasks.add_task(run_kb_task, material_id)
+    task = create_task(db, "kb_process", target_id=material_id,
+                       started_by=user["id"])
+    background_tasks.add_task(run_kb_task, material_id, task["id"])
     return {"material_id": material_id, "process_status": "处理中",
+            "task_id": task["id"],
             "hint": "轮询 GET /api/knowledge/materials/{id} 查看 process_status / process_progress"}
 
 
-@router.delete("/materials/{material_id}")
-def delete_material(material_id: str) -> dict:
+@router.delete("/materials/{material_id}",
+               dependencies=[Depends(require_permission("knowledge", "edit"))])
+def delete_material(material_id: str,
+                    user: dict = Depends(get_current_user)) -> dict:
     """级联删除：chunks + 能力卡（source_doc）+ Milvus（best-effort）+ 落盘文件。"""
     mat = _get_material_or_404(material_id)
     db = Database(config.DB_PATH)
@@ -284,6 +306,8 @@ def delete_material(material_id: str) -> dict:
             pass
     for base in (config.KB_RAW_DIR, config.KB_PARSED_DIR):
         shutil.rmtree(Path(base) / material_id, ignore_errors=True)
+    record_audit(db, user, "delete_knowledge", "kb_material", material_id,
+                 detail=f"file={mat['file_name']} 能力卡删除={caps}")
     return {"material_id": material_id, "deleted": True,
             "capabilities_deleted": caps, "milvus_deleted": milvus_deleted}
 
@@ -291,7 +315,38 @@ def delete_material(material_id: str) -> dict:
 # ═══════════════════════════════════════════════════════════════════════
 # 能力卡 / 语义检索
 # ═══════════════════════════════════════════════════════════════════════
-@router.get("/materials/{material_id}/capabilities")
+@router.get("/versions",
+            dependencies=[Depends(require_permission("knowledge", "view"))])
+def list_kb_versions(
+    capability_id: str = "",
+    label: str = "",
+    limit: int = Query(50, ge=1, le=200),
+) -> dict:
+    """知识库版本列表（M7-04）：?capability_id= 或 ?label= 过滤，最新在前。
+
+    追溯链（标书 → 生成记录 → 知识库版本 → 原始文件/页码）：
+    generation_jobs.kb_version 记生成时的最新 label，据此可逐跳定位到
+    capabilities.source_doc/source_page（章节级 EVD→材料→页码链 M3/M4 已有）。
+    """
+    db = Database(config.DB_PATH)
+    sql = "SELECT * FROM knowledge_versions"
+    conds: list[str] = []
+    params: list = []
+    if capability_id:
+        conds.append("capability_id = ?")
+        params.append(capability_id)
+    if label:
+        conds.append("label = ?")
+        params.append(label)
+    if conds:
+        sql += " WHERE " + " AND ".join(conds)
+    sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
+    rows = db.query(sql, (*params, limit))
+    return {"total": len(rows), "versions": [dict(r) for r in rows]}
+
+
+@router.get("/materials/{material_id}/capabilities",
+            dependencies=[Depends(require_permission("knowledge", "view"))])
 def list_material_capabilities(material_id: str) -> list[dict]:
     mat = _get_material_or_404(material_id)
     db = Database(config.DB_PATH)
@@ -300,7 +355,8 @@ def list_material_capabilities(material_id: str) -> list[dict]:
     return [Database.row_to_capability(r).model_dump(mode="json") for r in rows]
 
 
-@router.get("/capabilities")
+@router.get("/capabilities",
+            dependencies=[Depends(require_permission("knowledge", "view"))])
 def list_capabilities(
     category: str | None = None,
     source_doc: str | None = None,
@@ -322,9 +378,15 @@ def list_capabilities(
             for r in db.query(sql, tuple(params))]
 
 
-@router.patch("/capabilities/{cap_id}")
-def patch_capability(cap_id: str, patch: CapabilityPatch) -> dict:
-    """人工修订（全可选）。attributes 为整体替换；category 枚举校验 422。"""
+@router.patch("/capabilities/{cap_id}",
+              dependencies=[Depends(require_permission("knowledge", "edit"))])
+def patch_capability(cap_id: str, patch: CapabilityPatch,
+                     user: dict = Depends(get_current_user)) -> dict:
+    """人工修订（全可选，M7-04 版本化）：attributes 整体替换；category 枚举校验 422。
+
+    每次修订 version+1 并写 knowledge_versions（capability_edit，
+    summary = before/after JSON），如 CAP-0001 v1→v2（张伟 5年→6年+PMP）。
+    """
     db = Database(config.DB_PATH)
     row = db.query_one("SELECT * FROM capabilities WHERE id = ?", (cap_id,))
     if not row:
@@ -342,12 +404,28 @@ def patch_capability(cap_id: str, patch: CapabilityPatch) -> dict:
         values["description"] = patch.description
     if patch.attributes is not None:
         values["attributes"] = json.dumps(patch.attributes, ensure_ascii=False)
+    if not values:
+        return Database.row_to_capability(row).model_dump(mode="json")
+
+    before = {k: row.get(k) for k in ("name", "category", "description",
+                                      "attributes", "source_doc", "source_page")}
+    values["version"] = int(row.get("version") or 1) + 1
+    values["updated_at"] = now_str()
     db.update("capabilities", "id", cap_id, values)
-    return Database.row_to_capability(
-        db.query_one("SELECT * FROM capabilities WHERE id = ?", (cap_id,))).model_dump(mode="json")
+    new_row = db.query_one("SELECT * FROM capabilities WHERE id = ?", (cap_id,))
+    after = {k: new_row.get(k) for k in before}
+    record_version(db, change_type="capability_edit",
+                   changed_by=user.get("username") or user.get("id", ""),
+                   capability_id=cap_id,
+                   summary=json.dumps({"before": before, "after": after},
+                                      ensure_ascii=False))
+    record_audit(db, user, "edit_capability", "capability", cap_id,
+                 detail=f"v{row.get('version') or 1}→v{values['version']}")
+    return Database.row_to_capability(new_row).model_dump(mode="json")
 
 
-@router.get("/search")
+@router.get("/search",
+            dependencies=[Depends(require_permission("knowledge", "view"))])
 def search_knowledge(
     q: str = Query(..., min_length=1),
     category: str | None = None,

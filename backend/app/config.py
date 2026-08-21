@@ -81,3 +81,14 @@ M3_RAG_MIN_KW = float(os.getenv("M3_RAG_MIN_KW", "0.2"))
 
 # 解析器版本（写入 documents.parser_version，M5 重解析可追溯）
 PARSER_VERSION = "1.0.0"
+
+# ── M7：企业级能力（认证 / RBAC / 审计）──
+# JWT 签名密钥（HS256；生产必须覆盖，默认值仅本机开发）
+JWT_SECRET = os.getenv("JWT_SECRET", "bidforge-dev-secret-change-me")
+JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "12"))
+# 初始管理员（users 表为空时自动种子；生产请覆盖密码）
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
+# 鉴权开关：false 时无 token 请求以系统用户放行（旧版验收脚本 / 本机调试用；
+# 默认 true 全面鉴权）
+AUTH_ENABLED = os.getenv("AUTH_ENABLED", "true").lower() in ("1", "true", "yes")

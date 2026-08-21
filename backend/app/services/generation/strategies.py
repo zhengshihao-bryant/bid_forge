@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from ..llm import create_llm_client
+from ..llm import create_llm_client, llm_call_context
 from .context import GenerationContext
 from .models import FactClass, Paragraph, SectionType
 from .prompts import SOLUTION_SYSTEM, build_solution_user_prompt
@@ -303,7 +303,8 @@ class SolutionLLMStrategy:
     def generate(self, ctx: GenerationContext) -> list[Paragraph]:
         client = self.llm or create_llm_client()
         try:
-            resp = client.chat_json(SOLUTION_SYSTEM, build_solution_user_prompt(ctx))
+            with llm_call_context("generate_section"):
+                resp = client.chat_json(SOLUTION_SYSTEM, build_solution_user_prompt(ctx))
         except Exception as e:                    # noqa: BLE001
             logger.warning("方案型 LLM 调用异常，回退事实模板: %s", str(e)[:120])
             return FactTemplateStrategy().generate(ctx)

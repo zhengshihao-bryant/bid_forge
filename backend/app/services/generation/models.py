@@ -166,6 +166,7 @@ class GenerationJob(BaseModel):
     done_sections: int = 0
     failed_sections: int = 0
     error: str = ""
+    kb_version: str = ""                   # M7 起：生成时的知识库版本快照（label）
     created_at: str = Field(default_factory=now_str)
     updated_at: str = Field(default_factory=now_str)
 

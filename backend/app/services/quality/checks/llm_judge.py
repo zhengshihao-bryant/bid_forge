@@ -20,6 +20,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any, Optional
 
+from ...llm import llm_call_context
 from ..models import CheckContext, IssueType, QualityIssue, Severity
 
 _SYSTEM_PROMPT = (
@@ -81,7 +82,8 @@ def _judge(llm, req: dict, body: str) -> Optional[dict]:
             f"对应标书章节内容：\n{body}\n\n"
             f"请判定 covered 并给理由。")
     try:
-        resp = llm.chat_json(_SYSTEM_PROMPT, user, temperature=0.0)
+        with llm_call_context("quality_judge"):
+            resp = llm.chat_json(_SYSTEM_PROMPT, user, temperature=0.0)
     except Exception:
         return None
     data = resp.get("data") if isinstance(resp, dict) else None

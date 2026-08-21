@@ -99,6 +99,52 @@ def tmp_env(monkeypatch, tmp_path):
     return data
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# M7 鉴权夹具
+# ═══════════════════════════════════════════════════════════════════════
+@pytest.fixture(autouse=True)
+def _auth_admin():
+    """M7 起：全局注入 admin 身份（dependency_overrides），存量测试零改动。
+
+    鉴权依赖代码在所有测试里被真实执行（路由挂载不虚置），只是身份在
+    测试层注入；M7 权限测试用 auth_user(role) 局部覆盖本 override，
+    或在测试内 pop 掉 override 测真实 token 路径。
+    """
+    from app.api.main import app
+    from app.auth.deps import get_current_user
+
+    admin = {"id": "U-ADMIN", "username": "admin", "email": "",
+             "display_name": "管理员", "roles": ["admin"], "permissions": set()}
+    app.dependency_overrides[get_current_user] = lambda: admin
+    yield
+    app.dependency_overrides.pop(get_current_user, None)
+
+
+@pytest.fixture()
+def auth_user():
+    """构造指定角色用户并覆盖 get_current_user（M7 RBAC 测试用）。
+
+    用法：user = auth_user("bid_editor", username="张三") ——
+    返回 user dict（roles/permissions 按 M7_ROLE_PERMISSIONS 展开），
+    override 随 fixture 结束还原。
+    """
+    from app.api.main import app
+    from app.auth.deps import get_current_user
+    from app.db import M7_ROLE_PERMISSIONS
+
+    def _make(role_id: str, user_id: str | None = None, **extra) -> dict:
+        uid = user_id or f"U-TEST-{role_id}"
+        user = {"id": uid, "username": uid.lower(), "email": "",
+                "display_name": role_id, "roles": [role_id],
+                "permissions": set(M7_ROLE_PERMISSIONS.get(role_id, []))}
+        user.update(extra)
+        app.dependency_overrides[get_current_user] = lambda: user
+        return user
+
+    yield _make
+    app.dependency_overrides.pop(get_current_user, None)
+
+
 @pytest.fixture()
 def kb_fake_env(monkeypatch, tmp_env):
     """M2 离线处理环境：禁 Milvus + 脚本化能力卡 LLM + 确定性伪嵌入。

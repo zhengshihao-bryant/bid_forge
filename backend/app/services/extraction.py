@@ -29,11 +29,12 @@ from typing import Any, Callable, Optional
 
 from .. import config
 from ..db import Database
-from ..schemas import (
-    Block, BlockType, ParsedDocument, QuantitativeItem, Requirement,
+from ..schemas import (    Block, BlockType, ParsedDocument, QuantitativeItem, Requirement,
     RequirementType, ScorePoint, SourceAnchor, now_str,
 )
-from .llm import create_llm_client
+from .llm import create_llm_client, llm_call_context
+from .task_tracker import (fail_task, start_task, succeed_task,
+                           update_progress)
 
 logger = logging.getLogger(__name__)
 
@@ -274,7 +275,8 @@ class RequirementExtractor:
             section_path=w.section_path, page_range=page_range, text=w.text)
 
         for attempt in range(3):
-            resp = self.client.chat_json(_SYSTEM_PROMPT, user)
+            with llm_call_context("extract"):
+                resp = self.client.chat_json(_SYSTEM_PROMPT, user)
             stats["llm_calls"] += 1
             if resp is None:
                 stats["retries"] += 1
@@ -514,14 +516,20 @@ def _score_to_row(p: ScorePoint) -> dict:
     }
 
 
-def run_extraction_task(tender_id: str) -> dict:
-    """后台任务入口：读取解析产物 → 提取需求 + 评分点 → 入库。"""
+def run_extraction_task(tender_id: str, task_id: str = "") -> dict:
+    """后台任务入口：读取解析产物 → 提取需求 + 评分点 → 入库。
+
+    M7-05：task_id 非空时同步任务中心状态（start/progress/succeed/fail），
+    旧调用（不传 task_id）零改动。
+    """
     db = Database(config.DB_PATH)
     tender = db.query_one("SELECT * FROM tenders WHERE id = ?", (tender_id,))
     if not tender:
         logger.error("提取任务：招标项目不存在 tender_id=%s", tender_id)
         return {"tender_id": tender_id, "error": "招标项目不存在"}
 
+    if task_id:
+        start_task(db, task_id)
     db.update("tenders", "id", tender_id,
               {"extraction_status": "提取中", "extraction_progress": "读取解析产物"})
     try:
@@ -543,6 +551,8 @@ def run_extraction_task(tender_id: str) -> dict:
         def progress_cb(msg: str, done: int, total: int) -> None:
             db.update("tenders", "id", tender_id,
                       {"extraction_progress": f"[{done}/{total}] {msg}"})
+            if task_id:
+                update_progress(db, task_id, done, total, msg)
 
         extractor = RequirementExtractor(create_llm_client(), progress_cb=progress_cb)
         reqs, stats = extractor.extract(tender_id, tender["name"], parsed_docs, doc_id_map)
@@ -565,6 +575,9 @@ def run_extraction_task(tender_id: str) -> dict:
         })
         logger.info("提取完成 tender=%s: %d 需求 / %d 评分点 / 窗口 %d / LLM 调用 %d",
                     tender_id, len(reqs), len(points), stats["windows"], stats["llm_calls"])
+        if task_id:
+            succeed_task(db, task_id, total=len(parsed_docs), done=len(parsed_docs),
+                         progress=f"{len(reqs)} 条需求 / {len(points)} 个评分点")
         return {"tender_id": tender_id, "requirements": len(reqs),
                 "score_points": len(points), "stats": stats,
                 "table_warnings": warnings}
@@ -572,4 +585,6 @@ def run_extraction_task(tender_id: str) -> dict:
         logger.exception("提取失败 tender=%s", tender_id)
         db.update("tenders", "id", tender_id,
                   {"extraction_status": "失败", "extraction_progress": str(e)[:500]})
+        if task_id:
+            fail_task(db, task_id, error=str(e))
         return {"tender_id": tender_id, "error": str(e)}

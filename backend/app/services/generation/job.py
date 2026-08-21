@@ -23,6 +23,8 @@ from typing import Optional
 from ... import config
 from ...db import Database
 from ...schemas import now_str
+from ..kb_versions import latest_kb_label
+from ..task_tracker import fail_task, start_task, succeed_task
 from .generator import SectionGenerator
 from .models import GenerationJob, SectionStatus
 from .outline import OutlineBuilder, tree_from_flat
@@ -52,6 +54,7 @@ class GenerationJobRunner:
             section_states={s.id: s.status.value
                             for s in self._ordered_sections(tender_id)},
             total_sections=len(self._ordered_sections(tender_id)),
+            kb_version=latest_kb_label(self.db),   # M7-04：KB 版本快照（无则 v0）
         )
         if section_id:
             job.total_sections = 1          # 单章节重生成只计 1
@@ -180,8 +183,11 @@ class GenerationJobRunner:
 # 后台任务入口（镜像 run_matching_task；FastAPI BackgroundTasks 调用）
 # ---------------------------------------------------------------------------
 def run_generation_task(tender_id: str, job_id: str, section_id: str = "",
-                        outline_id: str = "") -> dict:
+                        outline_id: str = "", task_id: str = "") -> dict:
     """后台生成任务：加载/创建 job → 逐章节生成 → 更新终态。
+
+    M7-05：task_id 非空时同步任务中心状态（start/succeed/fail；
+    generation_jobs 本身是章节级进度事实源，任务行按 job 字段收口）。
 
     返回 {tender_id, job_id, status, ...}（后台线程同步执行，调用方轮询 DB）。
     """
@@ -189,14 +195,21 @@ def run_generation_task(tender_id: str, job_id: str, section_id: str = "",
     runner = GenerationJobRunner(db)
     job = runner.get_job(job_id) or runner.create_job(
         tender_id, outline_id, section_id, job_id=job_id)
+    if task_id:
+        start_task(db, task_id)
     try:
         runner.run(job, section_id=section_id)
+        if task_id:
+            succeed_task(db, task_id, done=job.done_sections,
+                         total=job.total_sections, progress=job.progress)
         return {"tender_id": tender_id, "job_id": job_id,
                 "status": job.status, "progress": job.progress}
     except Exception as e:  # noqa: BLE001 —— 状态机兜底
         logger.exception("生成任务失败 job=%s", job_id)
         runner._set(job, "失败", progress=f"生成失败: {str(e)[:200]}")
         runner._log(job_id, "", "error", f"任务失败：{str(e)[:200]}")
+        if task_id:
+            fail_task(db, task_id, error=str(e))
         return {"tender_id": tender_id, "job_id": job_id, "status": "失败",
                 "error": str(e)}
 

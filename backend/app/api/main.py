@@ -44,19 +44,25 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .. import config
-from ..db import Database
+from ..auth.deps import get_current_user
+from ..db import Database, seed_rbac
 from ..services.vector_store import get_milvus_store
+from .routes_admin import router as admin_router
+from .routes_auth import router as auth_router
 from .routes_generation import router as generation_router
 from .routes_knowledge import router as knowledge_router
 from .routes_matching import router as matching_router
+from .routes_projects import router as projects_router
 from .routes_quality import router as quality_router
+from .routes_tasks import router as tasks_router
 from .routes_tenders import router as tenders_router
 from .routes_workbench import router as workbench_router
+from ..evaluation.api import router as eval_router
 
 API_VERSION = "0.1.0"
 SERVICE_NAME = "企业标书生成平台 (Bid Generation Platform)"
@@ -70,8 +76,10 @@ logger = logging.getLogger("bidgen.api")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """启动时建表（幂等）。"""
-    Database(config.DB_PATH).init_schema()
+    """启动时建表（幂等）+ RBAC 种子（幂等）。"""
+    db = Database(config.DB_PATH)
+    db.init_schema()
+    seed_rbac(db)
     logger.info("%s v%s 启动，数据库: %s", SERVICE_NAME, API_VERSION, config.DB_PATH)
     yield
 
@@ -103,12 +111,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(tenders_router)
-app.include_router(knowledge_router)
-app.include_router(matching_router)
-app.include_router(generation_router)
-app.include_router(quality_router)
-app.include_router(workbench_router)
+# 认证路由公开注册（login 匿名）；其余业务路由整体要求登录（401 兜底），
+# 细粒度权限用端点级 dependencies 挂 require_*（M7-02）
+app.include_router(auth_router)
+app.include_router(tenders_router, dependencies=[Depends(get_current_user)])
+app.include_router(knowledge_router, dependencies=[Depends(get_current_user)])
+app.include_router(matching_router, dependencies=[Depends(get_current_user)])
+app.include_router(generation_router, dependencies=[Depends(get_current_user)])
+app.include_router(quality_router, dependencies=[Depends(get_current_user)])
+app.include_router(workbench_router, dependencies=[Depends(get_current_user)])
+# M7 新模块（projects 端点自带 require_permission；tasks/eval 自带 get_current_user）
+app.include_router(projects_router)
+app.include_router(admin_router)
+app.include_router(tasks_router)
+app.include_router(eval_router)
 
 
 # ═══════════════════════════════════════════════════════════════════════
