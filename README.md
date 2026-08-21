@@ -33,16 +33,6 @@
 
 > 项目时间线：2024.09 – 2025.05 ｜ 定位：企业级 AI 内容生产 / 文档智能处理系统
 
-五大 AI 项目矩阵中的「内容生产」一环：
-
-| 项目 | 角色 |
-|---|---|
-| 企业法律知识助手 | 知识获取 |
-| AI 招聘助手 | 流程执行 |
-| **企业标书生成平台** | **内容生产** |
-| 深度搜索系统 | 复杂分析 / Agent |
-| AI 应用平台 | 平台化 |
-
 ## 一、解决什么问题
 
 软件公司收到 200–500 页招标文件（PDF/Word/Excel/扫描件/附件）后，售前、方案、技术人员制作标书时面对四个真实痛点：
@@ -207,7 +197,7 @@ pytest tests/test_m4_integration.py -m llm -v   # M4 真实 LLM 方案型：证�
 # 真实 Milvus 回环测试（需 docker start milvus-etcd milvus-minio milvus-standalone）
 pytest tests/test_vector_store.py -m milvus -v
 
-# 5. 启动服务（8001 端口，8000 被法律助手占用）
+# 5. 启动服务
 cd backend && python -m uvicorn app.api.main:app --port 8001
 # Swagger UI: http://localhost:8001/docs
 
@@ -315,11 +305,11 @@ M7（企业级能力，`/api/auth` + `/api/admin` + `/api/projects` + `/api/know
 | `GET /api/tasks` / `GET /api/tasks/{id}` / `POST /api/tasks/{id}/cancel` | 任务中心（5 类任务统一登记；非 admin 只见自己任务；cancel 仅 pending：本人→cancelled/他人 403/running 409/终态 409/不存在 404） |
 | `GET /api/eval/retrieval` / `GET /api/eval/generation` / `GET /api/eval/trends` / `GET /api/eval/summary` | 评估体系（Recall@K/MRR、生成 4 指标、质量趋势、三合一 summary；均带 disclaimer） |
 
-## 七、重构亮点（个人重写过程中的设计取舍）
+## 七、设计取舍
 
-本项目基于作者在企业投标业务中的真实经历**独立重写**（代码、架构、测试全部个人实现）。重写时相比最初版本的主要改进：
+开发过程中关键设计决策的权衡记录：
 
-| 改进点 | 原设计的痛点 | 本项目的做法 |
+| 决策点 | 常见做法的问题 | 本项目的做法 |
 |---|---|---|
 | **确定性优先于 LLM** | 生成结果靠"看效果"把关 | 规则引擎解析评分表、四状态匹配、确定性校验器兜底——LLM 只负责语言组织，判断与校验全部可复现、可测试 |
 | **证据即产品** | 引用是事后补的装饰 | 每条需求四元溯源（文件/页码/章节路径/块号），生成只允许消费证据池内容，`【待确认】`原位标注未证实数字 |
