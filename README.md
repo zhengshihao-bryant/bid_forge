@@ -75,56 +75,49 @@ RAG 在这里只是检索能力，不是项目本身。核心命题是双向结�
 
 ```mermaid
 flowchart TB
-    subgraph INPUT["输入层"]
+    subgraph IN["输入"]
         T["招标文件<br/>PDF / Word / Excel / 扫描件"]
-        K["企业资料<br/>产品/案例/资质/方案…"]
+        K["企业资料<br/>产品 / 案例 / 资质 / 方案"]
     end
 
-    subgraph PARSING["M1 · 解析与需求提取"]
-        P1["四类解析器<br/>ParsedDocument 统一产物"]
-        P2["需求提取管线<br/>六类需求实体 + 四元溯源"]
+    subgraph S1["M1 · 解析与需求提取"]
+        P["四类解析器 → 需求实体<br/>文件/页码/章节/块 四元溯源"]
     end
 
-    subgraph KB["M2 · 企业知识库"]
-        K1["能力卡提取<br/>Capability"]
-        K2["切块嵌入 ~600字<br/>BGE / FakeEmbedding"]
-        K3["向量存储<br/>Milvus ⇄ SQLite 降级"]
+    subgraph S2["M2 · 企业知识库"]
+        C["能力卡 + 向量索引<br/>Milvus ⇄ SQLite 降级"]
     end
 
-    subgraph MATCH["M3 · 需求-能力匹配"]
-        M1["归一化 / 分类 / 约束提取"]
-        M2["检索 + 规则引擎 + LLM Judge"]
-        M3["证据验证 + 冲突仲裁<br/>四状态 MatchResult"]
+    subgraph S3["M3 · 需求-能力匹配"]
+        MAT["规则引擎 + LLM Judge<br/>四状态 + 证据链"]
     end
 
-    subgraph GEN["M4 · 标书生成引擎"]
-        G1["大纲规划 26 章节"]
-        G2["需求→章节映射"]
-        G3["四策略生成器<br/>证据白名单 · 【待确认】约束"]
-        G4["组装 docx / markdown"]
+    subgraph S4["M4 · 标书生成"]
+        GEN["26 章节 · 证据白名单<br/>无证据不声称 · 【待确认】约束"]
     end
 
-    subgraph QA["M5 · 质量检查引擎"]
-        Q1["事实 / 完整性 / 一致性 / 格式"]
-        Q2["5 维评分 + 终版闭环门禁"]
+    subgraph S5["M5 · 质量检查"]
+        QA["事实/完整/一致/格式<br/>5 维评分 · 终版门禁"]
     end
 
-    subgraph M7["M7 · 企业级能力"]
-        E1["JWT 认证 + RBAC + 审计"]
-        E2["任务中心 + Agent 链路监控"]
-        E3["离线评估体系"]
+    subgraph S6["M6 · 工作台"]
+        WB["Vue3 8 页面 · SSE 实时进度<br/>人工编辑 · 终版闭环"]
     end
 
-    T --> P1 --> P2
-    K --> K1 --> K2 --> K3
-    P2 --> M1
-    K3 --> M2
-    M1 --> M2 --> M3
-    M3 --> G1 --> G2 --> G3 --> G4
-    G4 --> Q1 --> Q2
-    P2 -. 需求基线 .-> M3
-    E1 -. 全链路鉴权 .-> MATCH & GEN & QA
-    E2 -. 任务状态 .-> PARSING & KB & MATCH & GEN
+    T --> P
+    K --> C
+    P --> MAT
+    C --> MAT
+    MAT --> GEN --> QA --> WB
+
+    subgraph S7["M7 · 企业级能力（横切全链路）"]
+        GOV["JWT 认证 · RBAC · 审计 · 知识版本<br/>任务中心 · 链路监控 · 评估体系"]
+    end
+    GOV -. 鉴权 / 审计 / 追踪（贯穿全部阶段） .-> MAT
+```
+
+> 主线：招标文件/企业资料 → 需求与能力双向结构化 → 匹配 → 受控生成 → 质检 → 交付；
+> M7 贯穿全链路（每条请求都经过鉴权，关键动作全部审计留痕）。
 
 
 ## 三、里程碑路线图
