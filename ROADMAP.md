@@ -75,7 +75,7 @@
 - [x] API：`/api/quality` 8 端点（check/reports/issues/patch/autofix/finalize/final）
 - **验收**（2026-08-18 实测，报告 `scripts/_m5_verify_report.txt`）：HTTP 端到端 **23/23 项全 OK** —— 基线 score=99.1、9 条待确认、0 CRITICAL/ERROR；9 组变异全部抓取（设备接入 2000→5000 / 张伟 6→3 年 / ISO9001→9002 / 合同额 500→800 / 删 canonical（UNKNOWN 需求）→ REQUIREMENT_MISSING / 章节清空 CH-06-1 / 封面项目名替换 / 跨章节冲突 5000 vs 2000 / 注入 EVD-9999）；finalize 闭环（未清 CRITICAL → 409 → PATCH 确认 → 已批准 score=95.1 → final.json/docx + review_records 审计）。67 个 M5 测试（66 离线确定性 + 1 llm 标记）。核查脚本 `scripts/verify_m5_quality.py`（种子嵌入后端 bge，确定性生成基线）
 - 已知限制：PDF 终版跳过（final.docx + final.md + quality-report.json 三件套）；语义覆盖审查默认关闭（include_llm=true 才跑，需配置 .env 的 LLM_API_KEY）；前端质量工作台（评分卡/问题列表/标记确认/导出）为 M5 之后阶段，API 字段已备好
-- 技术白皮书（docs/whitepaper/）+ CHANGELOG + tag v1.0.0 封版推送留待后续
+- 技术白皮书（docs/whitepaper/）2026-08-19 已写成（白皮书 + 面试问答手册）
 - 口径声明：以上结果基于项目内置验收基线（与 tests/test_m3_matcher.py 同源）与离线确定性生成路径；score 为 BidForge 内部质量指标（按问题严重度扣分的 5 维公式），不代表通用准确率
 
 ### M6 标书工作台（2025.03–04）✅ 已完成
@@ -90,7 +90,7 @@
 - **验收**（2026-08-18 实测，报告 `scripts/_m6_verify_report.txt`）：HTTP 端到端 **30/30 项全 OK** —— 项目列表聚合（T-M3：文档 3/2/1、匹配 17/6/5/5、生成 26/26 章节、质量快照 88.5 分 1 待处理、交付 finalized=False）；六阶段派生 6/6；KB 统计 8/8/9 张能力卡；单项目概览 + 未知项目 404；SSE 已完成 job 推历史日志 + done 关闭流 + 404/404；前端文件核查（8 页面/5 组件/8 路由/store）。前端 vue-tsc + vite build 通过；浏览器抽查 3 个关键页面（项目列表/概览/生成工作台）DOM 断言 **15/15** + 无控制台错误。验收中发现并修复 1 个缺陷：`load_tender_doc_sections` 以 `str.startswith(WindowsPath)` 抛 TypeError（M4 时 documents 无行未触发，M6 种子补 documents 行暴露），且相对 parsed_file 缺 `PARSED_DIR/{tender_id}/` 前缀（已对齐 M1 入库口径），修复带回归测试 `test_outline_with_documents_rows`
 - 已知限制：工作台聚合为只读派生不落库；SSE 断连回退轮询 job 状态端点；质量工作台"定位章节"跳转生成工作台不解析章节号精确定位（有意简化）；离线 MockLLM 口径下 canonical=34（含 1 条评分细则 REQ-C-0034）而 matches=33 —— 评分细则天然排除为设计行为
 - 测试回归：全量离线套件 **248 passed / 0 failed**（llm/milvus 标记 10 个默认跳过）；outline 修复后对受影响 M4/M5/M6 套件定向复跑 **64 passed**
-- 技术白皮书（docs/whitepaper/）留待后续
+- 技术白皮书（docs/whitepaper/）2026-08-19 已写成（白皮书 + 面试问答手册）
 - 口径声明：以上结果基于项目内置 T-M3 验收基线（种子嵌入后端 bge）与离线确定性路径；前端抽查为 3 个关键页面的 DOM 级断言，不代表全量交互验收
 
 ### M7 企业级能力（2025.04–05）✅ 已完成
@@ -108,7 +108,7 @@
 - **验收**（2026-08-19 实测，报告 `scripts/_m7_verify_report.txt`）：HTTP 端到端 **52/52 项全 OK** —— 5 演示账号登录 + admin 17/17 权限；RBAC 越权抽查 8 项全 403 + 项目成员闭环 6 步（非成员 403 → 添加 → 放行 → 成员不授 project:view → 重复添加 409 → 移除恢复 403）+ workbench delivery_only；审计 31 条含 13/13 类动作 + 过滤 + 仅 admin；知识库版本 2026-08-19-v1（资料重处理）/-v2（能力卡修订）+ 生成任务快照最新 label；任务中心 5 类 × 7 条任务全 success + cancel 五态语义 + 可见性过滤；traces 5 类 success（spans≥1）+ user_id 正确；评估 Recall@10=0.9231 / MRR=0.7173（evaluated=13）、生成 4 指标全 1.0（事实核对 36 条 0 问题、需求覆盖 forward 33/33 + reverse 36/36）、趋势 2 期 1 delta。核查脚本 `scripts/verify_m7_enterprise.py`（单阶段自包含：直接 DB 种 T-M3 基线 + 全 HTTP 带 JWT；清空 M7 验收表保证可重跑）
 - 测试回归：全量离线套件 **290 passed / 0 failed**（llm/milvus 标记 10 个 deselected——pytest.ini 新增 addopts `-m "not llm and not milvus"`，落实 marker 注释的"默认跳过"；此前裸跑 `pytest -q` 时 milvus 回环测试在无 docker 环境连接失败）
 - 已知限制：llm_calls 仅增强 LLM 客户端（真实 LLM_API_KEY）落库，MockLLM 不记录（离线口径恒 0）；running 任务不可取消（BackgroundTasks 不可杀 → 409 语义）；`AUTH_ENABLED=false` 时审计记系统用户；多人协同编辑/完整审核工作流留待后续
-- 技术白皮书（docs/whitepaper/）留待后续
+- 技术白皮书（docs/whitepaper/）2026-08-19 已写成（白皮书 + 面试问答手册）
 - 口径声明：以上结果基于项目内置 T-M3 验收基线（verify_m4 种子，嵌入后端 bge）与离线确定性路径；评估数字为 BidForge 内部离线评估集口径，不代表通用准确率
 
 ## 阶段扩展（M5 之后，对应需求分析第二~四阶段）
