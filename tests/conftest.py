@@ -308,3 +308,50 @@ def seed_m4(tmp_env, m3_env):
     coverage = mapper.map_all(tender_id)
     return {"db": db, "tender_id": tender_id, "sections": sections,
             "coverage": coverage, "builder": builder, "mapper": mapper}
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# M5 质量检查种子
+# ═══════════════════════════════════════════════════════════════════════
+@pytest.fixture()
+def seed_m5(seed_m4):
+    """M5 全种子：seed_m4 ＋ tenders 行 ＋ 全章节生成（离线确定性）＋ Markdown 组装。
+
+    = seed_m4 ＋ GenerationJobRunner 全章节生成（无 Key 时 MockLLM → 方案型
+      回退事实模板，确定性产出正文）＋ BidDocumentAssembler.render_markdown
+      （只出 Markdown 不落盘 docx）。
+
+    返回 {db, tender_id, sections, coverage, builder, mapper, assembled,
+          assembler, job}。测试变异直接 db.execute UPDATE content_md。
+    """
+    from app.services.generation import BidDocumentAssembler, GenerationJobRunner
+
+    data = dict(seed_m4)
+    db = data["db"]
+    tender_id = data["tender_id"]
+    db.insert("tenders", {"id": tender_id, "name": "M5质量检查测试项目",
+                          "created_at": "2026-01-01 00:00:00"})
+    runner = GenerationJobRunner(db)
+    job = runner.create_job(tender_id)
+    runner.run(job)
+    assembler = BidDocumentAssembler(db)
+    md = assembler.render_markdown(tender_id)
+    data.update({"assembled": md, "assembler": assembler, "job": job})
+    return data
+
+
+@pytest.fixture()
+def m5_api(seed_m5, monkeypatch, tmp_path):
+    """M5 API 环境：seed_m5 + DATA_DIR 指临时目录（finalize 落 tmp_path/out）+ TestClient。
+
+    路由/runner 在请求时读 config.DB_PATH / config.DATA_DIR（非 import 时捕获），
+    tmp_env 已隔离 DB，这里再隔离产物目录，避免 finalize 污染真实 backend/data/out。
+    返回 (data, client)。
+    """
+    from fastapi.testclient import TestClient
+
+    from app.api.main import app
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    with TestClient(app) as c:
+        yield seed_m5, c

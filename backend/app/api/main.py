@@ -26,6 +26,10 @@ app/api/main.py —— FastAPI 应用入口
     GET  /api/matching/tenders/{id}/requirements  规范需求（REQ-C-XXXX）
     GET  /api/matching/tenders/{id}/matches      匹配记录（FULL/PARTIAL/MISSING/UNKNOWN）
     GET  /api/matching/tenders/{id}/response-table  需求响应表（json/markdown）
+    POST /api/quality/tenders/{id}/check         质量检查（确定性 + 可选 LLM 语义覆盖）
+    GET  /api/quality/tenders/{id}/reports       质量报告列表 / 详情
+    PATCH /api/quality/issues/{issue_id}         问题人工处理（已确认/已忽略/已修复）
+    POST /api/quality/tenders/{id}/finalize      终版闭环（final.docx + final.md + 报告）
 
 交互式文档（Swagger UI）：http://localhost:8001/docs
 """
@@ -45,6 +49,7 @@ from ..services.vector_store import get_milvus_store
 from .routes_generation import router as generation_router
 from .routes_knowledge import router as knowledge_router
 from .routes_matching import router as matching_router
+from .routes_quality import router as quality_router
 from .routes_tenders import router as tenders_router
 
 API_VERSION = "0.1.0"
@@ -93,6 +98,7 @@ app.include_router(tenders_router)
 app.include_router(knowledge_router)
 app.include_router(matching_router)
 app.include_router(generation_router)
+app.include_router(quality_router)
 
 
 # ═══════════════════════════════════════════════════════════════════════

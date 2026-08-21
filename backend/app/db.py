@@ -533,6 +533,99 @@ class Database:
             updated_at=row.get("updated_at") or now_str(),
         )
 
+    # ── M5 质量检查 ─────────────────────────────────────────────────────
+    @staticmethod
+    def report_to_row(r: "QualityReport") -> dict:
+        """质量报告 → quality_reports 行（JSON 列 ensure_ascii=False 保中文）。"""
+        return {
+            "id": r.id, "tender_id": r.tender_id,
+            "document_version": r.document_version, "score": r.score,
+            "dimensions": json.dumps(
+                [d.model_dump(mode="json") for d in r.dimensions],
+                ensure_ascii=False),
+            "counts": json.dumps(r.counts, ensure_ascii=False),
+            "issue_counts": json.dumps(r.issue_counts, ensure_ascii=False),
+            "summary": r.summary, "status": r.status,
+            "reviewer": r.reviewer, "review_time": r.review_time,
+            "created_at": r.created_at,
+        }
+
+    @staticmethod
+    def row_to_report(row: dict) -> "QualityReport":
+        from .services.quality.models import DimensionScore, QualityReport
+
+        return QualityReport(
+            id=row["id"], tender_id=row["tender_id"],
+            document_version=row.get("document_version") or "",
+            score=row.get("score") or 0.0,
+            dimensions=[DimensionScore(**d) for d in
+                        json.loads(row.get("dimensions") or "[]")],
+            counts=json.loads(row.get("counts") or "{}"),
+            issue_counts=json.loads(row.get("issue_counts") or "{}"),
+            summary=row.get("summary") or "",
+            status=row.get("status") or "草稿",
+            reviewer=row.get("reviewer") or "",
+            review_time=row.get("review_time") or "",
+            created_at=row.get("created_at") or now_str(),
+        )
+
+    @staticmethod
+    def issue_to_row(i: "QualityIssue") -> dict:
+        """问题 → quality_issues 行。"""
+        return {
+            "id": i.id, "report_id": i.report_id, "tender_id": i.tender_id,
+            "document_version": i.document_version,
+            "section_id": i.section_id, "requirement_id": i.requirement_id,
+            "issue_type": i.issue_type.value, "severity": i.severity.value,
+            "status": i.status.value, "message": i.message,
+            "source_refs": json.dumps(i.source_refs, ensure_ascii=False),
+            "suggestion": i.suggestion,
+            "autofixable": 1 if i.autofixable else 0,
+            "created_at": i.created_at,
+        }
+
+    @staticmethod
+    def row_to_issue(row: dict) -> "QualityIssue":
+        from .services.quality.models import (IssueStatus, IssueType,
+                                              QualityIssue, Severity)
+
+        return QualityIssue(
+            id=row["id"], report_id=row["report_id"],
+            tender_id=row["tender_id"],
+            document_version=row.get("document_version") or "",
+            section_id=row.get("section_id") or "",
+            requirement_id=row.get("requirement_id") or "",
+            issue_type=IssueType(row.get("issue_type") or IssueType.FORMAT_ERROR),
+            severity=Severity(row.get("severity") or "WARNING"),
+            status=IssueStatus(row.get("status") or "待处理"),
+            message=row.get("message") or "",
+            source_refs=json.loads(row.get("source_refs") or "[]"),
+            suggestion=row.get("suggestion") or "",
+            autofixable=bool(row.get("autofixable")),
+            created_at=row.get("created_at") or now_str(),
+        )
+
+    @staticmethod
+    def review_to_row(rv: "ReviewRecord") -> dict:
+        """审核留痕 → review_records 行（不含自增 id）。"""
+        return {
+            "issue_id": rv.issue_id, "action": rv.action,
+            "reviewer": rv.reviewer, "note": rv.note,
+            "created_at": rv.created_at,
+        }
+
+    @staticmethod
+    def row_to_review(row: dict) -> "ReviewRecord":
+        from .services.quality.models import ReviewRecord
+
+        return ReviewRecord(
+            id=row.get("id") or 0, issue_id=row.get("issue_id") or "",
+            action=row.get("action") or "",
+            reviewer=row.get("reviewer") or "",
+            note=row.get("note") or "",
+            created_at=row.get("created_at") or now_str(),
+        )
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # DDL（M2/M3 表预建，向前兼容）
@@ -830,6 +923,54 @@ CREATE TABLE IF NOT EXISTS generation_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_generation_logs_job ON generation_logs(generation_id);
 
+-- M5：质量检查引擎（检查 + 报告 + 人工审核闭环）
+-- quality_reports：一次检查的报告快照（score 为 5 维内部质量指标，非"准确率"）
+CREATE TABLE IF NOT EXISTS quality_reports (
+    id TEXT PRIMARY KEY,
+    tender_id TEXT NOT NULL,
+    document_version TEXT NOT NULL DEFAULT '',
+    score REAL NOT NULL DEFAULT 0,
+    dimensions TEXT NOT NULL DEFAULT '[]',
+    counts TEXT NOT NULL DEFAULT '{}',
+    issue_counts TEXT NOT NULL DEFAULT '{}',
+    summary TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT '草稿',
+    reviewer TEXT NOT NULL DEFAULT '',
+    review_time TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_quality_reports_tender ON quality_reports(tender_id);
+
+-- quality_issues：报告内的问题明细（M5-16 状态机：待处理→已确认/已忽略/已修复）
+CREATE TABLE IF NOT EXISTS quality_issues (
+    id TEXT PRIMARY KEY,
+    report_id TEXT NOT NULL,
+    tender_id TEXT NOT NULL,
+    document_version TEXT NOT NULL DEFAULT '',
+    section_id TEXT NOT NULL DEFAULT '',
+    requirement_id TEXT NOT NULL DEFAULT '',
+    issue_type TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT '待处理',
+    message TEXT NOT NULL DEFAULT '',
+    source_refs TEXT NOT NULL DEFAULT '[]',
+    suggestion TEXT NOT NULL DEFAULT '',
+    autofixable INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_quality_issues_report ON quality_issues(report_id);
+CREATE INDEX IF NOT EXISTS idx_quality_issues_tender ON quality_issues(tender_id);
+
+-- review_records：人工审核留痕（问题处理 + finalize 批准审计）
+CREATE TABLE IF NOT EXISTS review_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    reviewer TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_review_records_issue ON review_records(issue_id);
 """
 
 

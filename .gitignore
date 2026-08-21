@@ -12,6 +12,8 @@ backend/data/parsed/
 backend/data/kb_raw/
 backend/data/kb_parsed/
 backend/data/bid.db
+# 终版产物（final.docx / final.md / quality-report.json，验收生成本地产物）
+backend/data/out/
 *.db
 *.db-journal
 *.db-wal
@@ -23,6 +25,8 @@ scripts/_kb_sample_cache.json
 scripts/_m1_verify_report.txt
 scripts/_m2_verify_report.txt
 scripts/_m3_verify_report.txt
+scripts/_m4_verify_report.txt
+scripts/_m5_verify_report.txt
 scripts/_drift_report.txt
 
 # 前端
