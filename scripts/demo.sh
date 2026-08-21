@@ -43,7 +43,7 @@ if [ "$MODE" = "--docker" ]; then
     echo "  重置数据:     docker compose down -v && docker compose up --build -d"
     echo "============================================================"
     echo ""
-    echo "演示步骤（面试 10 分钟版）："
+    echo "演示步骤（10 分钟快速演示版）："
     echo "  1. 打开前端 → 项目页新建项目，上传 backend/data/samples/智慧园区项目/01_招标文件正文.docx"
     echo "  2. 知识库页上传 backend/data/samples/企业资料包/ 下 8 份资料"
     echo "  3. 匹配页运行匹配 → 查看四状态 + 证据链（REQ-C-0002 = FULL）"

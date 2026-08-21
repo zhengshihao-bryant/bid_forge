@@ -45,7 +45,7 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
         Write-Host "  停止:         docker compose down"
         Write-Host "  重置数据:     docker compose down -v && docker compose up --build -d"
         Write-Host ""
-        Write-Host "演示步骤（面试 10 分钟版）："
+        Write-Host "演示步骤（10 分钟快速演示版）："
         Write-Host "  1. 前端项目页新建项目，上传 backend/data/samples/智慧园区项目/01_招标文件正文.docx"
         Write-Host "  2. 知识库页上传 backend/data/samples/企业资料包/ 下 8 份资料"
         Write-Host "  3. 匹配页运行匹配 → 四状态 + 证据链（REQ-C-0002 = FULL）"
