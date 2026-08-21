@@ -45,7 +45,7 @@ RAG 在这里只是检索能力，不是项目本身。核心命题是双向结�
 | # | 里程碑 | 时间 | 状态 |
 |---|---|---|---|
 | M1 | 招标文件解析 + 需求提取 | 2024.09–10 | ✅ 完成 |
-| M2 | 企业知识库（能力卡片 + RAG 索引） | 2024.10–11 | 未开始 |
+| M2 | 企业知识库（能力卡片 + RAG 索引） | 2024.10–11 | ✅ 完成 |
 | M3 | 需求-能力匹配 + 章节生成（证据注入 + 需求响应表） | 2024.11–12 | 未开始 |
 | M4 | Word 导出 + Web 界面（Vue3/Vite） | 2025.01–02 | 未开始 |
 | M5 | 一致性/完整性检查 + 测试集 + 白皮书 + 封版 v1.0.0 | 2025.03–04 | 未开始 |
@@ -60,16 +60,21 @@ RAG 在这里只是检索能力，不是项目本身。核心命题是双向结�
 │   │   ├── schemas.py        # 六大实体 Pydantic 模型（数据模型是项目的分水岭）
 │   │   ├── config.py         # 路径与 env 配置
 │   │   ├── db.py             # SQLite（每任务独立连接 + WAL，线程安全）
-│   │   ├── api/              # FastAPI（main + routes_tenders）
+│   │   ├── api/              # FastAPI（main + routes_tenders + routes_knowledge）
 │   │   ├── parsers/          # PDF/Word/Excel/OCR 四类解析器，统一 ParsedDocument 产物
-│   │   └── services/         # llm（重试/Mock 降级）+ extraction（窗口切分→提取→校验→去重）
+│   │   └── services/         # llm + extraction（M1 提取）
+│   │                         # embedding（BGE/FakeEmbedding）+ vector_store（Milvus/SQLite 降级）
+│   │                         # kb_chunking（~600 字切块）+ capability_extractor（能力卡 + 后台任务）
 │   └── data/
-│       ├── samples/          # 样例招标文件包（入库，测试确定性来源）
+│       ├── samples/          # 样例招标文件包 + 样例企业资料包（入库，测试确定性来源）
 │       ├── raw/ parsed/      # 上传原文与解析产物（gitignored）
 ├── scripts/
-│   ├── make_sample_tender.py    # 样例生成器（LLM 模式 / --no-llm 离线模式，可续跑）
-│   └── verify_m1_extraction.py  # M1 验收核查（预埋基线对照报告）
-├── tests/                    # 33 个离线用例 + llm 标记集成用例
+│   ├── make_sample_tender.py    # M1 样例生成器（LLM 模式 / --no-llm 离线模式，可续跑）
+│   ├── verify_m1_extraction.py  # M1 验收核查（预埋基线对照报告）
+│   ├── make_sample_kb.py        # M2 样例企业资料包生成器（8 类，--no-llm 事实精确版）
+│   ├── verify_m2_knowledge.py   # M2 验收核查（上传→处理→检索基线→能力卡核对）
+│   └── probe_milvus.py          # Milvus 兼容性探针（临时集合 spike，不碰既有集合）
+├── tests/                    # 61 个离线用例 + llm/milvus 标记集成用例（6 个）
 ├── frontend/                 # Vue3 + Vite + Element Plus（M4 完善；招标列表/详情页已可用）
 └── docs/                     # 白皮书（M5）
 ```
@@ -85,22 +90,32 @@ cp .env.example .env   # 填入真实 DeepSeek Key
 cd backend && python ../scripts/make_sample_tender.py
 # 离线模式（不调 API）：python ../scripts/make_sample_tender.py --no-llm
 
-# 3. 单元测试（离线，FakeLLM）
-pytest tests/ -m "not llm" -v
+# 3. 生成样例企业资料包（8 类；--no-llm 为事实精确版，推荐提交/测试用）
+python scripts/make_sample_kb.py --no-llm
+
+# 4. 单元测试（离线，FakeLLM + FakeEmbedding）
+pytest tests/ -m "not llm and not milvus" -v
 # 真实 LLM 集成测试（需 Key，对照预埋基线抽查召回与数字保真）
 pytest tests/test_llm_integration.py -m llm -v
+# 真实 Milvus 回环测试（需 docker start milvus-etcd milvus-minio milvus-standalone）
+pytest tests/test_vector_store.py -m milvus -v
 
-# 4. 启动服务（8001 端口，8000 被法律助手占用）
+# 5. 启动服务（8001 端口，8000 被法律助手占用）
 cd backend && python -m uvicorn app.api.main:app --port 8001
 # Swagger UI: http://localhost:8001/docs
 
-# 5. 端到端
+# 6. M1 端到端
 curl -F "files=@data/samples/智慧园区项目/01_招标文件正文.docx" http://localhost:8001/api/tenders
 curl -X POST http://localhost:8001/api/tenders/{id}/extract      # 后台提取，轮询状态
 curl "http://localhost:8001/api/tenders/{id}/requirements?importance=高"
+
+# 7. M2 端到端（上传样例资料包 → 处理 → 检索；验收报告 scripts/_m2_verify_report.txt）
+python scripts/verify_m2_knowledge.py          # 上传 + 处理 + 检索基线 + 能力卡核对
+python scripts/verify_m2_knowledge.py --skip-ingest   # 复用已入库数据只跑核查
+python scripts/verify_m2_knowledge.py --reprocess     # Milvus 恢复后重写索引再核查
 ```
 
-## 六、API 一览（M1）
+## 六、API 一览（M1 + M2）
 
 | 端点 | 说明 |
 |---|---|
@@ -110,12 +125,22 @@ curl "http://localhost:8001/api/tenders/{id}/requirements?importance=高"
 | `GET /api/tenders/{id}/requirements` | 需求列表（type/importance/status/is_star 过滤） |
 | `PATCH /api/tenders/{id}/requirements/{rid}` | 人工修订（置 human_confirmed） |
 | `GET /api/tenders/{id}/score-points` | 规则解析的评分点列表 |
+| `POST /api/knowledge/materials` | 企业资料上传（8 类 category 枚举，多文件，单文件失败不阻塞） |
+| `GET /api/knowledge/materials[/{id}]` | 列表（category/status 过滤）/ 详情（章节树） |
+| `GET /api/knowledge/materials/{id}/chunks` | 内容块分页（不含 embedding；~600 字块 + 四元溯源元数据） |
+| `POST /api/knowledge/materials/{id}/process` | 后台处理：切块 → 嵌入 + 向量写入 → 能力卡提取（历史标书跳过卡片） |
+| `GET /api/knowledge/materials/{id}/capabilities` / `GET /api/knowledge/capabilities` | 资料/全局能力卡（category/source_doc 过滤） |
+| `PATCH /api/knowledge/capabilities/{cap_id}` | 能力卡人工修订（attributes 整体替换） |
+| `DELETE /api/knowledge/materials/{id}` | 级联删除（chunks/卡片/Milvus/落盘文件） |
+| `GET /api/knowledge/search` | 语义检索（q/category/material_id/top_k；engine 字段标识 milvus/sqlite 降级路径） |
 
 ## 七、已知限制（如实记录）
 
-- docx 无页码信息（Word 页面属于渲染层），docx 来源需求的出处锚点以**章节路径 + 块号**为准；PDF 才锚定页码
+- docx 无页码信息（Word 页面属于渲染层），docx 来源需求/能力卡的出处锚点以**章节路径 + 块号**为准；PDF 才锚定页码（docx 能力卡 source_page 恒为空，不采信 LLM 臆测页码）
 - 扫描件 OCR 依赖 PaddleOCR（可选安装），未安装时管线优雅降级为"检测标记 + 待 OCR"
-- LLM 提取质量与预埋基线对照见 `backend/data/samples/智慧园区项目/样例说明.md`（M1 验收标准）
+- 能力卡以 `source_doc`（文件名）关联资料：同类别重传同名文件会清掉旧卡（capabilities 表无 material_id，M1 定版）——重传请先删除旧资料
+- Milvus 挂/未启动时检索自动降级 SQLite 暴力余弦（engine 字段透明标识），嵌入失败仅标记 index_status=degraded、不整任务失败；Milvus 恢复后重跑 process 即重建索引
+- LLM 提取质量与预埋基线对照见 `backend/data/samples/智慧园区项目/样例说明.md`（M1）与 `backend/data/samples/企业资料包/样例说明.md`（M2）
 
 ## 八、惯例与纪律
 

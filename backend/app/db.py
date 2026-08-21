@@ -10,7 +10,7 @@ app/db.py —— SQLite 存储层
 
 表清单（M2/M3 表现在预建，向前兼容）：
   M1：tenders / documents / requirements / score_points
-  M2：capabilities / matches（matches 实际 M3 使用，随能力卡一起预建）
+  M2：kb_materials / kb_chunks（M2 新增）/ capabilities / matches（matches 实际 M3 使用）
   M3：outlines / drafts
 
 requirements 行与 Requirement 模型的映射在 requirement_to_row / row_to_requirement，
@@ -147,6 +147,124 @@ class Database:
             updated_at=row.get("updated_at") or now_str(),
         )
 
+    # ------------------------------------------------------------------
+    # KbMaterial / KbChunk ↔ 行 映射（schema ↔ 持久化单一出处）
+    # ------------------------------------------------------------------
+    @staticmethod
+    def material_to_row(m: "KbMaterial") -> dict:
+        return {
+            "id": m.id,
+            "category": m.category.value,
+            "file_name": m.file_name,
+            "stored_name": m.stored_name,
+            "file_type": m.file_type,
+            "total_pages": m.total_pages,
+            "char_count": m.char_count,
+            "ocr_pages": json.dumps(m.ocr_pages, ensure_ascii=False),
+            "raw_hash": m.raw_hash,
+            "parser_version": m.parser_version,
+            "parse_error": m.parse_error,
+            "parsed_file": m.parsed_file,
+            "process_status": m.process_status.value,
+            "process_progress": m.process_progress,
+            "chunk_count": m.chunk_count,
+            "capability_count": m.capability_count,
+            "index_status": m.index_status,
+            "created_at": m.created_at,
+        }
+
+    @staticmethod
+    def row_to_material(row: dict) -> "KbMaterial":
+        from .schemas import CapabilityCategory, KbMaterial, KbProcessStatus
+
+        return KbMaterial(
+            id=row["id"],
+            category=CapabilityCategory(row["category"]),
+            file_name=row["file_name"],
+            stored_name=row.get("stored_name") or "",
+            file_type=row.get("file_type") or "",
+            total_pages=row.get("total_pages") or 0,
+            char_count=row.get("char_count") or 0,
+            ocr_pages=json.loads(row.get("ocr_pages") or "[]"),
+            raw_hash=row.get("raw_hash") or "",
+            parser_version=row.get("parser_version") or "",
+            parse_error=row.get("parse_error") or "",
+            parsed_file=row.get("parsed_file") or "",
+            process_status=KbProcessStatus(row.get("process_status") or "未处理"),
+            process_progress=row.get("process_progress") or "",
+            chunk_count=row.get("chunk_count") or 0,
+            capability_count=row.get("capability_count") or 0,
+            index_status=row.get("index_status") or "none",
+            created_at=row.get("created_at") or now_str(),
+        )
+
+    @staticmethod
+    def chunk_to_row(c: "KbChunk", embedding: Optional[list] = None) -> dict:
+        return {
+            "id": c.id,
+            "material_id": c.material_id,
+            "category": c.category.value,
+            "file_name": c.file_name,
+            "file_type": getattr(c, "file_type", "") or "",
+            "content": c.content,
+            "section_path": c.section_path,
+            "page_start": c.page_start,
+            "page_end": c.page_end,
+            "block_ids": json.dumps(c.block_ids, ensure_ascii=False),
+            "embedding": json.dumps(embedding or [], ensure_ascii=False),
+            "seq": c.seq,
+            "created_at": c.created_at,
+        }
+
+    @staticmethod
+    def row_to_chunk(row: dict) -> "KbChunk":
+        from .schemas import CapabilityCategory, KbChunk
+
+        return KbChunk(
+            id=row["id"],
+            material_id=row["material_id"],
+            category=CapabilityCategory(row["category"]),
+            file_name=row.get("file_name") or "",
+            content=row["content"],
+            section_path=row.get("section_path") or "",
+            page_start=row.get("page_start"),
+            page_end=row.get("page_end"),
+            block_ids=json.loads(row.get("block_ids") or "[]"),
+            seq=row.get("seq") or 0,
+            created_at=row.get("created_at") or now_str(),
+        )
+
+    # ------------------------------------------------------------------
+    # Capability ↔ 行 映射（M1 预建表，M2 起写入）
+    # ------------------------------------------------------------------
+    @staticmethod
+    def capability_to_row(cap: "Capability") -> dict:
+        return {
+            "id": cap.id,
+            "category": cap.category.value,
+            "name": cap.name,
+            "attributes": json.dumps(cap.attributes, ensure_ascii=False),
+            "description": cap.description,
+            "source_doc": cap.source_doc,
+            "source_page": cap.source_page,
+            "created_at": cap.created_at,
+        }
+
+    @staticmethod
+    def row_to_capability(row: dict) -> "Capability":
+        from .schemas import Capability, CapabilityCategory
+
+        return Capability(
+            id=row["id"],
+            category=CapabilityCategory(row["category"]),
+            name=row["name"],
+            attributes=json.loads(row.get("attributes") or "{}"),
+            description=row.get("description") or "",
+            source_doc=row.get("source_doc") or "",
+            source_page=row.get("source_page"),
+            created_at=row.get("created_at") or now_str(),
+        )
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # DDL（M2/M3 表预建，向前兼容）
@@ -217,6 +335,46 @@ CREATE TABLE IF NOT EXISTS score_points (
 CREATE INDEX IF NOT EXISTS idx_score_points_tender ON score_points(tender_id);
 
 -- M2：企业知识库
+CREATE TABLE IF NOT EXISTS kb_materials (
+    id TEXT PRIMARY KEY,
+    category TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    stored_name TEXT NOT NULL,
+    file_type TEXT NOT NULL,
+    total_pages INTEGER NOT NULL DEFAULT 0,
+    char_count INTEGER NOT NULL DEFAULT 0,
+    ocr_pages TEXT NOT NULL DEFAULT '[]',
+    raw_hash TEXT NOT NULL DEFAULT '',
+    parser_version TEXT NOT NULL DEFAULT '',
+    parse_error TEXT NOT NULL DEFAULT '',
+    parsed_file TEXT NOT NULL DEFAULT '',
+    process_status TEXT NOT NULL DEFAULT '未处理',
+    process_progress TEXT NOT NULL DEFAULT '',
+    chunk_count INTEGER NOT NULL DEFAULT 0,
+    capability_count INTEGER NOT NULL DEFAULT 0,
+    index_status TEXT NOT NULL DEFAULT 'none',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_kb_materials_category ON kb_materials(category);
+
+-- 内容块：SQLite 为事实源（全文 + 四元溯源 + 向量 JSON）；Milvus 为可重建索引
+CREATE TABLE IF NOT EXISTS kb_chunks (
+    id TEXT PRIMARY KEY,
+    material_id TEXT NOT NULL,
+    category TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    file_type TEXT NOT NULL,
+    content TEXT NOT NULL,
+    section_path TEXT NOT NULL DEFAULT '',
+    page_start INTEGER,
+    page_end INTEGER,
+    block_ids TEXT NOT NULL DEFAULT '[]',
+    embedding TEXT NOT NULL DEFAULT '[]',
+    seq INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_kb_chunks_material ON kb_chunks(material_id);
+
 CREATE TABLE IF NOT EXISTS capabilities (
     id TEXT PRIMARY KEY,
     category TEXT NOT NULL,

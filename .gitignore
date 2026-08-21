@@ -9,6 +9,8 @@ __pycache__/
 # 数据（样例 samples 入库保证测试确定性；原始上传与解析产物不入库）
 backend/data/raw/
 backend/data/parsed/
+backend/data/kb_raw/
+backend/data/kb_parsed/
 backend/data/bid.db
 *.db
 *.db-journal
@@ -17,7 +19,9 @@ backend/data/bid.db
 
 # 样例生成缓存与验收报告（本地产物）
 scripts/_sample_cache.json
+scripts/_kb_sample_cache.json
 scripts/_m1_verify_report.txt
+scripts/_m2_verify_report.txt
 scripts/_drift_report.txt
 
 # 前端

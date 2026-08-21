@@ -6,11 +6,14 @@ tests/conftest.py —— 测试夹具
 - sample_files：样例包缺失时用 --no-llm 补生成 pdf/xlsx/scan
   （docx 依赖 LLM/缓存生成耗时，缺失时由各测试 skip 而非自动生成，
    避免与后台 LLM 生成进程竞争输出文件）
-- tmp_env：把 DB/RAW/PARSED 指到 pytest 临时目录，测试不污染真实数据
+- kb_sample_dir：M2 样例企业资料包（8 类全规则生成，缺失时离线补生成）
+- tmp_env：把 DB/RAW/PARSED/KB_RAW/KB_PARSED 指到 pytest 临时目录，测试不污染真实数据
+- kb_fake_env：M2 离线环境——禁 Milvus + FakeLLM(data_key=capabilities) + FakeEmbedding
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +27,7 @@ sys.path.insert(0, str(BACKEND))
 from app import config  # noqa: E402
 
 SAMPLE_DIR = config.SAMPLES_DIR / "智慧园区项目"
+KB_SAMPLE_DIR = config.SAMPLES_DIR / "企业资料包"
 
 
 @pytest.fixture(scope="session")
@@ -35,7 +39,7 @@ def sample_dir(tmp_path_factory) -> Path:
             missing.append(name)
     if missing:
         # pdf / xlsx / scan 生成不走 LLM，几秒内完成，无缓存竞争
-        env = {**__import__("os").environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+        env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
         for flag in ("pdf", "xlsx", "scan"):
             subprocess.run(
                 [sys.executable, str(REPO_ROOT / "scripts" / "make_sample_tender.py"),
@@ -53,28 +57,82 @@ def docx_sample(sample_dir) -> Path:
     return p
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# M2 企业知识库夹具
+# ═══════════════════════════════════════════════════════════════════════
+_KB_FILES = {
+    "产品": "01_产品介绍.pdf",
+    "项目案例": "02_项目案例.docx",
+    "公司资质": "03_公司资质.docx",
+    "人员资质": "04_人员资质.docx",
+    "技术方案": "05_技术方案.pdf",
+    "售后服务": "06_售后服务.docx",
+    "公司介绍": "07_公司介绍.pdf",
+    "历史标书": "08_历史标书.docx",
+}
+
+
+@pytest.fixture(scope="session")
+def kb_sample_dir(tmp_path_factory) -> Path:
+    """样例企业资料包：8 类全规则生成（--no-llm），缺失时离线补生成。"""
+    missing = [f for f in _KB_FILES.values() if not (KB_SAMPLE_DIR / f).exists()]
+    if missing:
+        env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+        subprocess.run(
+            [sys.executable, str(REPO_ROOT / "scripts" / "make_sample_kb.py"), "--no-llm"],
+            cwd=str(REPO_ROOT), check=True, env=env, capture_output=True)
+    return KB_SAMPLE_DIR
+
+
 @pytest.fixture()
 def tmp_env(monkeypatch, tmp_path):
-    """隔离 DB / RAW / PARSED 到临时目录。"""
+    """隔离 DB / RAW / PARSED / KB_RAW / KB_PARSED 到临时目录。"""
     data = tmp_path / "data"
-    (data / "raw").mkdir(parents=True)
-    (data / "parsed").mkdir(parents=True)
+    for sub in ("raw", "parsed", "kb_raw", "kb_parsed"):
+        (data / sub).mkdir(parents=True)
     monkeypatch.setattr(config, "DB_PATH", data / "bid.db")
     monkeypatch.setattr(config, "RAW_DIR", data / "raw")
     monkeypatch.setattr(config, "PARSED_DIR", data / "parsed")
+    monkeypatch.setattr(config, "KB_RAW_DIR", data / "kb_raw")
+    monkeypatch.setattr(config, "KB_PARSED_DIR", data / "kb_parsed")
     return data
+
+
+@pytest.fixture()
+def kb_fake_env(monkeypatch, tmp_env):
+    """M2 离线处理环境：禁 Milvus + 脚本化能力卡 LLM + 确定性伪嵌入。
+
+    注意嵌入工厂要在两处名字都 patch：capability_extractor 模块导入时已
+    绑定 create_embedding，而 SearchService.__init__ 惰性 import embedding 模块
+    的 create_embedding——只 patch 一处会漏掉另一条路径。
+    """
+    from app.services import capability_extractor, embedding
+    from app.services.embedding import FakeEmbedding
+
+    monkeypatch.setattr(config, "MILVUS_ENABLED", False)
+    fake = FakeLLM(data_key="capabilities")
+    monkeypatch.setattr(capability_extractor, "create_llm_client", lambda: fake)
+    fake_emb = FakeEmbedding(dimension=config.EMBEDDING_DIM)
+    monkeypatch.setattr(capability_extractor, "create_embedding", lambda: fake_emb)
+    monkeypatch.setattr(embedding, "create_embedding", lambda: fake_emb)
+    return fake
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # FakeLLM（离线提取测试）
 # ═══════════════════════════════════════════════════════════════════════
 class FakeLLM:
-    """脚本化 LLM：按窗口顺序弹出预设响应；耗尽后返回空列表。"""
+    """脚本化 LLM：按窗口顺序弹出预设响应；耗尽后返回空列表。
+
+    data_key 控制响应包装字段：需求提取用 "requirements"（默认），
+    能力卡提取用 "capabilities"（FakeLLM(data_key="capabilities")）。
+    """
 
     model = "fake"
 
-    def __init__(self, responses=None):
+    def __init__(self, responses=None, data_key="requirements"):
         self.responses = list(responses or [])
+        self.data_key = data_key
         self.calls = 0
 
     def chat_json(self, system, user, temperature=None, max_tokens=None):
@@ -83,9 +141,9 @@ class FakeLLM:
             resp = self.responses.pop(0)
             if isinstance(resp, dict) and "data" in resp:
                 return resp
-            return {"data": {"requirements": resp}, "finish_reason": "stop",
+            return {"data": {self.data_key: resp}, "finish_reason": "stop",
                     "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
-        return {"data": {"requirements": []}, "finish_reason": "stop",
+        return {"data": {self.data_key: []}, "finish_reason": "stop",
                 "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
 
     def chat(self, messages, temperature=None, max_tokens=None, response_format=None):

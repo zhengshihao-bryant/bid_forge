@@ -234,6 +234,91 @@ class DocumentMeta(BaseModel):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# M2：企业知识库（资料/内容块/检索结果）
+# 注意：capabilities 表在 M1 已预建、字段定死（无 material_id、无人工锁定标记），
+# 卡片↔资料用 source_doc=file_name 关联；人工锁定/版本 M3 随匹配表一起做。
+# ═══════════════════════════════════════════════════════════════════════
+class KbProcessStatus(str, Enum):
+    """知识库资料处理状态（落库，服务重启不丢状态）。"""
+    NONE = "未处理"
+    RUNNING = "处理中"
+    DONE = "已完成"
+    FAILED = "失败"
+
+
+class KbMaterial(BaseModel):
+    """kb_materials 表行 —— 1 个上传文件 = 1 行。
+
+    process_status 状态机：未处理 → 处理中 → 已完成/失败；
+    index_status：none / done / degraded（Milvus 写入失败仅降级，不整任务失败）。
+    """
+    id: str                                 # uuid4 hex 前 12 位
+    category: CapabilityCategory
+    file_name: str                          # 原名（展示用；能力卡 source_doc 关联键）
+    stored_name: str = ""
+    file_type: str = ""
+    total_pages: int = 0
+    char_count: int = 0
+    ocr_pages: list[int] = Field(default_factory=list)
+    raw_hash: str = ""                      # 原文 SHA-256，M5 重处理可追溯
+    parser_version: str = ""
+    parse_error: str = ""
+    parsed_file: str = ""                   # KB_PARSED_DIR/{id}/{stored_name}.json
+    process_status: KbProcessStatus = KbProcessStatus.NONE
+    process_progress: str = ""
+    chunk_count: int = 0
+    capability_count: int = 0
+    index_status: str = "none"              # none / done / degraded
+    created_at: str = Field(default_factory=now_str)
+
+
+class KbChunk(BaseModel):
+    """kb_chunks 表行 —— SQLite 为事实源（全文 + 四元溯源）。
+
+    embedding 列只在降级检索/重建索引时使用，不出 API；
+    content 是干净块文本——【第p页】标记绝不写入（页码进 page_start/page_end）。
+    """
+    id: str                                 # {material_id}_C{n:04d}
+    material_id: str
+    category: CapabilityCategory
+    file_name: str
+    content: str
+    section_path: str = ""
+    page_start: Optional[int] = None        # PDF 1 基；docx 恒 None
+    page_end: Optional[int] = None
+    block_ids: list[str] = Field(default_factory=list)  # 合并入本块的 Block.block_id
+    seq: int = 0                            # 资料内块序号
+    created_at: str = Field(default_factory=now_str)
+
+
+class CapabilityPatch(BaseModel):
+    """能力卡人工修订请求体（全可选，任一非空即修订）。"""
+    category: Optional[str] = None
+    name: Optional[str] = None
+    description: Optional[str] = None
+    attributes: Optional[dict[str, Any]] = None
+
+
+class SearchHit(BaseModel):
+    """语义检索命中 —— 四元溯源 + 引擎分数。"""
+    chunk_id: str
+    material_id: str
+    file_name: str
+    category: str
+    section_path: str = ""
+    page: Optional[int] = None
+    score: float = 0.0
+    content: str = ""
+    anchor: Optional[SourceAnchor] = None   # 完整四元溯源（M3 引用注入依赖）
+
+
+class SearchResult(BaseModel):
+    """检索结果 —— engine 标识降级路径，透明可查。"""
+    engine: str = "milvus"                  # milvus / sqlite（降级）
+    hits: list[SearchHit] = Field(default_factory=list)
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # M2/M3 实体（结构现在定死，向前兼容）
 # ═══════════════════════════════════════════════════════════════════════
 class Capability(BaseModel):

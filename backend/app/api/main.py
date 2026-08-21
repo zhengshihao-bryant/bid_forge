@@ -16,6 +16,12 @@ app/api/main.py —— FastAPI 应用入口
     GET  /api/tenders/{id}/requirements 需求列表（type/importance/status/is_star 过滤）
     PATCH /api/tenders/{id}/requirements/{rid}  人工修订（置 human_confirmed）
     GET  /api/tenders/{id}/score-points 评分点列表
+    POST /api/knowledge/materials           企业资料上传（8 类）→ 解析入库
+    GET  /api/knowledge/materials[/{id}]    列表 / 详情（章节树）
+    GET  /api/knowledge/materials/{id}/chunks  内容块分页
+    POST /api/knowledge/materials/{id}/process 后台处理：切块 + 嵌入 + 能力卡提取
+    GET  /api/knowledge/capabilities        能力卡列表（人工修订 PATCH）
+    GET  /api/knowledge/search              语义检索（Milvus 挂自动降级 SQLite）
 
 交互式文档（Swagger UI）：http://localhost:8001/docs
 """
@@ -31,6 +37,8 @@ from fastapi.staticfiles import StaticFiles
 
 from .. import config
 from ..db import Database
+from ..services.vector_store import get_milvus_store
+from .routes_knowledge import router as knowledge_router
 from .routes_tenders import router as tenders_router
 
 API_VERSION = "0.1.0"
@@ -54,10 +62,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="企业标书生成平台 API",
     description=(
-        "企业级标书 AI 辅助生成平台 HTTP 服务（M1：招标文件解析 + 需求提取）。\n\n"
+        "企业级标书 AI 辅助生成平台 HTTP 服务（M1：招标文件解析 + 需求提取；"
+        "M2：企业知识库 + 语义检索）。\n\n"
         "- `POST /api/tenders`：多文件上传（PDF/Word/Excel/图片）→ 解析 → 入库\n"
         "- `POST /api/tenders/{id}/extract`：后台需求提取（LLM，状态轮询）\n"
         "- 需求条目四元溯源（文件/页码/章节路径/块号），人工可修订\n"
+        "- `POST /api/knowledge/materials`：企业资料上传（8 类）→ 切块 + 能力卡\n"
+        "- `GET /api/knowledge/search`：BGE 语义检索（Milvus 挂自动降级 SQLite）\n"
         "- 未配置 `LLM_API_KEY` 时自动使用 Mock LLM（可离线验证管线）"
     ),
     version=API_VERSION,
@@ -73,6 +84,7 @@ app.add_middleware(
 )
 
 app.include_router(tenders_router)
+app.include_router(knowledge_router)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -91,6 +103,8 @@ def service_info() -> dict:
             "GET /api/tenders": "招标项目列表",
             "POST /api/tenders/{id}/extract": "启动需求提取（后台任务）",
             "GET /api/tenders/{id}/requirements": "需求列表（四元溯源）",
+            "POST /api/knowledge/materials": "企业资料上传（8 类）→ 解析入库",
+            "GET /api/knowledge/search": "语义检索（Milvus 挂自动降级 SQLite）",
         },
         "docs": "/docs",
     }
@@ -98,14 +112,24 @@ def service_info() -> dict:
 
 @app.get("/health", tags=["服务"])
 def health() -> dict:
-    """健康检查（秒回，不跑重活）。"""
+    """健康检查（秒回，不跑重活；不构造嵌入器——BGE 懒加载约 21s）。"""
     db_ok = config.DB_PATH.exists()
+    milvus = get_milvus_store()
+    if milvus is None:
+        milvus_status: dict = {"status": "degraded", "reason": "disabled"}
+    else:
+        info = milvus.info()
+        milvus_status = ({"status": "ok", "version": info.get("version", "")}
+                         if info.get("reachable")
+                         else {"status": "degraded",
+                               "reason": info.get("error", "unreachable")})
     return {
         "status": "ok" if db_ok else "degraded",
         "service": SERVICE_NAME,
         "version": API_VERSION,
         "db": str(config.DB_PATH),
         "llm": "configured" if config.LLM_API_KEY else "mock",
+        "milvus": milvus_status,
     }
 
 
