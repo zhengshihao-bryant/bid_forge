@@ -35,6 +35,7 @@ from ..schemas import (    Block, BlockType, ParsedDocument, QuantitativeItem, R
 from .llm import create_llm_client, llm_call_context
 from .task_tracker import (fail_task, start_task, succeed_task,
                            update_progress)
+from .trace import AgentTracer
 
 logger = logging.getLogger(__name__)
 
@@ -516,16 +517,22 @@ def _score_to_row(p: ScorePoint) -> dict:
     }
 
 
-def run_extraction_task(tender_id: str, task_id: str = "") -> dict:
+def run_extraction_task(tender_id: str, task_id: str = "",
+                        user_id: str = "") -> dict:
     """后台任务入口：读取解析产物 → 提取需求 + 评分点 → 入库。
 
     M7-05：task_id 非空时同步任务中心状态（start/progress/succeed/fail），
     旧调用（不传 task_id）零改动。
+    M7-06：Agent 链路（trace/span 两级；user_id 由启动端点传入）——
+    监控旁路写库失败不打断提取本体。
     """
     db = Database(config.DB_PATH)
+    tracer = AgentTracer(db)
+    trace_id = tracer.start("extract", target_id=tender_id, user_id=user_id)
     tender = db.query_one("SELECT * FROM tenders WHERE id = ?", (tender_id,))
     if not tender:
         logger.error("提取任务：招标项目不存在 tender_id=%s", tender_id)
+        tracer.finish(trace_id, "failed", error="招标项目不存在")
         return {"tender_id": tender_id, "error": "招标项目不存在"}
 
     if task_id:
@@ -533,20 +540,21 @@ def run_extraction_task(tender_id: str, task_id: str = "") -> dict:
     db.update("tenders", "id", tender_id,
               {"extraction_status": "提取中", "extraction_progress": "读取解析产物"})
     try:
-        docs = db.query("SELECT * FROM documents WHERE tender_id = ?", (tender_id,))
-        parsed_docs: list[ParsedDocument] = []
-        doc_id_map: dict[str, str] = {}
-        for d in docs:
-            if d["parse_error"]:
-                continue
-            pfile = Path(config.PARSED_DIR) / tender_id / d["parsed_file"]
-            if not pfile.exists():
-                logger.warning("解析产物缺失: %s", pfile)
-                continue
-            parsed_docs.append(ParsedDocument.model_validate_json(pfile.read_text(encoding="utf-8")))
-            doc_id_map[parsed_docs[-1].file_name] = d["id"]
-        if not parsed_docs:
-            raise ValueError("该招标项目没有可用的解析产物")
+        with tracer.span(trace_id, "load_docs", "读取解析产物"):
+            docs = db.query("SELECT * FROM documents WHERE tender_id = ?", (tender_id,))
+            parsed_docs: list[ParsedDocument] = []
+            doc_id_map: dict[str, str] = {}
+            for d in docs:
+                if d["parse_error"]:
+                    continue
+                pfile = Path(config.PARSED_DIR) / tender_id / d["parsed_file"]
+                if not pfile.exists():
+                    logger.warning("解析产物缺失: %s", pfile)
+                    continue
+                parsed_docs.append(ParsedDocument.model_validate_json(pfile.read_text(encoding="utf-8")))
+                doc_id_map[parsed_docs[-1].file_name] = d["id"]
+            if not parsed_docs:
+                raise ValueError("该招标项目没有可用的解析产物")
 
         def progress_cb(msg: str, done: int, total: int) -> None:
             db.update("tenders", "id", tender_id,
@@ -554,16 +562,17 @@ def run_extraction_task(tender_id: str, task_id: str = "") -> dict:
             if task_id:
                 update_progress(db, task_id, done, total, msg)
 
-        extractor = RequirementExtractor(create_llm_client(), progress_cb=progress_cb)
-        reqs, stats = extractor.extract(tender_id, tender["name"], parsed_docs, doc_id_map)
-        points, warnings = parse_score_tables(tender_id, parsed_docs)
+        with tracer.span(trace_id, "extract", "需求提取 + 评分标准解析"):
+            extractor = RequirementExtractor(create_llm_client(), progress_cb=progress_cb)
+            reqs, stats = extractor.extract(tender_id, tender["name"], parsed_docs, doc_id_map)
+            points, warnings = parse_score_tables(tender_id, parsed_docs)
 
-        db.execute("DELETE FROM requirements WHERE tender_id = ?", (tender_id,))
-        db.execute("DELETE FROM score_points WHERE tender_id = ?", (tender_id,))
-        for r in reqs:
-            db.insert("requirements", Database.requirement_to_row(r))
-        for p in points:
-            db.insert("score_points", _score_to_row(p))
+            db.execute("DELETE FROM requirements WHERE tender_id = ?", (tender_id,))
+            db.execute("DELETE FROM score_points WHERE tender_id = ?", (tender_id,))
+            for r in reqs:
+                db.insert("requirements", Database.requirement_to_row(r))
+            for p in points:
+                db.insert("score_points", _score_to_row(p))
 
         db.update("tenders", "id", tender_id, {
             "extraction_status": "已完成",
@@ -578,6 +587,7 @@ def run_extraction_task(tender_id: str, task_id: str = "") -> dict:
         if task_id:
             succeed_task(db, task_id, total=len(parsed_docs), done=len(parsed_docs),
                          progress=f"{len(reqs)} 条需求 / {len(points)} 个评分点")
+        tracer.finish(trace_id, "success")
         return {"tender_id": tender_id, "requirements": len(reqs),
                 "score_points": len(points), "stats": stats,
                 "table_warnings": warnings}
@@ -587,4 +597,5 @@ def run_extraction_task(tender_id: str, task_id: str = "") -> dict:
                   {"extraction_status": "失败", "extraction_progress": str(e)[:500]})
         if task_id:
             fail_task(db, task_id, error=str(e))
+        tracer.finish(trace_id, "failed", error=str(e))
         return {"tender_id": tender_id, "error": str(e)}

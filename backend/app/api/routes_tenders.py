@@ -234,7 +234,8 @@ def extract_requirements(tender_id: str, background_tasks: BackgroundTasks,
     db.update("tenders", "id", tender_id, {"extraction_status": "提取中"})
     task = create_task(db, "extract", target_id=tender_id,
                        started_by=user["id"])
-    background_tasks.add_task(run_extraction_task, tender_id, task["id"])
+    background_tasks.add_task(run_extraction_task, tender_id, task["id"],
+                              user["id"])
     return {"tender_id": tender_id, "extraction_status": "提取中",
             "task_id": task["id"],
             "hint": "轮询 GET /api/tenders/{id} 查看 extraction_status / extraction_progress"}

@@ -28,6 +28,7 @@ scripts/_m3_verify_report.txt
 scripts/_m4_verify_report.txt
 scripts/_m5_verify_report.txt
 scripts/_m6_verify_report.txt
+scripts/_m7_verify_report.txt
 scripts/_drift_report.txt
 
 # 前端

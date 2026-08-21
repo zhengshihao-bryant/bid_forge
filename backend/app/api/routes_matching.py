@@ -78,7 +78,8 @@ def start_matching(tender_id: str, background_tasks: BackgroundTasks,
         raise HTTPException(status_code=400, detail="该招标项目没有提取出的需求（请先跑 M1 提取）")
     task = create_task(db, "match", target_id=tender_id,
                        started_by=user["id"])
-    background_tasks.add_task(run_matching_task, tender_id, task["id"])
+    background_tasks.add_task(run_matching_task, tender_id, task["id"],
+                              user["id"])
     return {"tender_id": tender_id, "status": "匹配中",
             "task_id": task["id"],
             "hint": "轮询 GET /api/matching/tenders/{id} 查看 status / progress"}

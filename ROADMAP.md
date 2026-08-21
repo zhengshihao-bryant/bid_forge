@@ -1,6 +1,6 @@
 # 企业标书生成平台 —— 路线图
 
-> 项目时间线：2024.09 – 2025.04 ｜ 五里程碑沿用企业法律知识助手的封版节奏
+> 项目时间线：2024.09 – 2025.05 ｜ 五里程碑沿用企业法律知识助手的封版节奏
 
 核心架构判断（已在需求分析阶段确定，不因实现困难而动摇）：
 
@@ -93,11 +93,29 @@
 - 技术白皮书（docs/whitepaper/）留待后续
 - 口径声明：以上结果基于项目内置 T-M3 验收基线（种子嵌入后端 bge）与离线确定性路径；前端抽查为 3 个关键页面的 DOM 级断言，不代表全量交互验收
 
+### M7 企业级能力（2025.04–05）✅ 已完成
+
+口径：M7 落地第四阶段首批能力（认证/权限/版本管理/审核留痕/任务管理）——认证与 RBAC 先行于一切业务端点生效；审计、知识库版本、任务中心、Agent 链路监控、评估体系横贯 M1–M6 六条管线；监控与评估一律"旁路可观测"，绝不打断业务。
+
+- [x] 认证（M7-01）：PBKDF2 600k 口令散列 + JWT HS256；登录/登出/me 端点；错误口令记 login_failed 审计；`AUTH_ENABLED=false` 时系统用户降级（无鉴权部署仍可跑离线验收）；5 个演示账号
+- [x] RBAC（M7-02）：5 角色 × 17 权限矩阵（admin/bid_manager/bid_editor/reviewer/staff）+ seed_rbac 幂等；`require_project_permission` 三段判定（admin 旁路 → 权限检查 → `final:*` 额外要求 project_members 成员身份）；项目成员 add/remove/list（重复添加 409）
+- [x] 操作审计（M7-03）：audit_logs 全量留痕（13 类关键动作：登录/失败登录/上传/生成/修订/质检/终版/成员变更/取消任务/查看终版等），action/resource/actor 过滤，仅 admin 可见
+- [x] 知识库版本（M7-04）：KV-xxxx 版本行 + `{日期}-v{n}` label；资料重处理/能力卡修订自动升版；生成任务 `kb_version` 快照（回答"这份标书用什么知识生成的"）
+- [x] 任务中心（M7-05）：TSK-xxxx 统一任务登记（extract/kb_process/match/generate/quality_check 5 类）+ 进度更新；cancel 仅 pending（本人→cancelled / 他人 403 / running 409 / 终态 409 / 不存在 404）；非 admin 只见自己启动的任务；generate 任务 ref_id 直达生成 job
+- [x] Agent 链路 + LLM 监控（M7-06）：AgentTracer trace/span 两级（success/failed 终态，异常重抛不吞错）；5 类任务全接入（user_id 经端点传入）；llm_calls 记录增强 LLM 客户端调用（MockLLM 不记录——离线口径）；监控写库失败绝不打断业务（旁路兜底）
+- [x] 评估体系（M7-07）：检索评估（合并 Recall@K/MRR）、生成评估（引用完整率/引用准确率/事实一致率/需求覆盖率 4 指标）、质量趋势（相邻报告 delta）、三合一 summary；每个响应带 disclaimer；评估数字与评分均为内部离线口径
+- [x] API：`/api/auth` 3 端点 + `/api/admin`（users/audit-logs/traces/llm-calls）+ `/api/projects/{id}/members` 3 端点 + `/api/knowledge/versions` + `/api/tasks`（列表/详情/cancel）+ `/api/eval/*` 4 端点
+- **验收**（2026-08-19 实测，报告 `scripts/_m7_verify_report.txt`）：HTTP 端到端 **52/52 项全 OK** —— 5 演示账号登录 + admin 17/17 权限；RBAC 越权抽查 8 项全 403 + 项目成员闭环 6 步（非成员 403 → 添加 → 放行 → 成员不授 project:view → 重复添加 409 → 移除恢复 403）+ workbench delivery_only；审计 31 条含 13/13 类动作 + 过滤 + 仅 admin；知识库版本 2026-08-19-v1（资料重处理）/-v2（能力卡修订）+ 生成任务快照最新 label；任务中心 5 类 × 7 条任务全 success + cancel 五态语义 + 可见性过滤；traces 5 类 success（spans≥1）+ user_id 正确；评估 Recall@10=0.9231 / MRR=0.7173（evaluated=13）、生成 4 指标全 1.0（事实核对 36 条 0 问题、需求覆盖 forward 33/33 + reverse 36/36）、趋势 2 期 1 delta。核查脚本 `scripts/verify_m7_enterprise.py`（单阶段自包含：直接 DB 种 T-M3 基线 + 全 HTTP 带 JWT；清空 M7 验收表保证可重跑）
+- 测试回归：全量离线套件 **290 passed / 0 failed**（llm/milvus 标记 10 个 deselected——pytest.ini 新增 addopts `-m "not llm and not milvus"`，落实 marker 注释的"默认跳过"；此前裸跑 `pytest -q` 时 milvus 回环测试在无 docker 环境连接失败）
+- 已知限制：llm_calls 仅增强 LLM 客户端（真实 LLM_API_KEY）落库，MockLLM 不记录（离线口径恒 0）；running 任务不可取消（BackgroundTasks 不可杀 → 409 语义）；`AUTH_ENABLED=false` 时审计记系统用户；多人协同编辑/完整审核工作流留待后续
+- 技术白皮书（docs/whitepaper/）留待后续
+- 口径声明：以上结果基于项目内置 T-M3 验收基线（verify_m4 种子，嵌入后端 bge）与离线确定性路径；评估数字为 BidForge 内部离线评估集口径，不代表通用准确率
+
 ## 阶段扩展（M5 之后，对应需求分析第二~四阶段）
 
 - 第二阶段：需求自动分类、历史标书复用、引用来源强化
 - 第三阶段：需求响应表增强、评分点分析、标书完整性检查、事实一致性检查、敏感信息检查
-- 第四阶段：多人协作、权限、版本管理、审核流程、项目管理 → 最后才考虑 Agent
+- 第四阶段：多人协同编辑、完整审核工作流、项目管理增强 → 最后才考虑 Agent（认证/RBAC/审计/知识库版本/任务中心已在 M7 落地）
 
 ## 工作惯例
 

@@ -42,6 +42,7 @@ from ..services.quality.runner import (
     QualityFinalizeError, QualityRunner, default_output_dir)
 from ..services.task_tracker import (create_task, fail_task, start_task,
                                      succeed_task)
+from ..services.trace import AgentTracer
 
 router = APIRouter(prefix="/api/quality", tags=["标书质量检查"])
 
@@ -93,17 +94,23 @@ def run_quality_check(tender_id: str, include_llm: bool = False,
     task = create_task(db, "quality_check", target_id=tender_id,
                        started_by=user["id"], total=1)
     start_task(db, task["id"])
+    tracer = AgentTracer(db)
+    trace_id = tracer.start("quality_check", target_id=tender_id,
+                            user_id=user["id"])
     t0 = time.perf_counter()
     try:
-        llm = create_llm_client() if include_llm else None
-        result = QualityRunner(db).run(tender_id, include_llm=include_llm, llm=llm)
+        with tracer.span(trace_id, "quality_check", "全量质量检查"):
+            llm = create_llm_client() if include_llm else None
+            result = QualityRunner(db).run(tender_id, include_llm=include_llm, llm=llm)
     except Exception as e:  # noqa: BLE001 —— 任务中心记失败，异常照常抛出
         fail_task(db, task["id"], error=str(e))
+        tracer.finish(trace_id, "failed", error=str(e))
         raise
     duration_ms = int((time.perf_counter() - t0) * 1000)
     succeed_task(db, task["id"], done=1, total=1,
                  progress=f"score={result['report'].score} "
                           f"耗时 {duration_ms}ms")
+    tracer.finish(trace_id, "success")
     record_audit(db, user, "quality_check", "project", tender_id,
                  detail=f"report={result['report'].id} "
                         f"score={result['report'].score} include_llm={include_llm}")

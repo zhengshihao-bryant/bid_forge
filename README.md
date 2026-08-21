@@ -1,6 +1,6 @@
 # 企业标书生成平台（Bid Generation Platform）
 
-> 项目时间线：2024.09 – 2025.04 ｜ 定位：企业级 AI 内容生产 / 文档智能处理系统
+> 项目时间线：2024.09 – 2025.05 ｜ 定位：企业级 AI 内容生产 / 文档智能处理系统
 
 五大 AI 项目矩阵中的「内容生产」一环：
 
@@ -50,6 +50,7 @@ RAG 在这里只是检索能力，不是项目本身。核心命题是双向结�
 | M4 | 标书生成引擎（大纲/映射/生成器/响应表/组装/任务状态机） | 2025.01–02 | ✅ 完成 |
 | M5 | 标书一致性与质量检查引擎（事实/完整性/一致性/格式检查 + 5 维评分 + 终版闭环） | 2025.03–04 | ✅ 完成 |
 | M6 | 标书工作台（项目/招标/需求/知识库/生成/质检/交付 8 页面 + 全流程聚合 + SSE 实时进度） | 2025.04 | ✅ 完成 |
+| M7 | 企业级能力（认证/RBAC/审计/知识库版本/任务中心/Agent 链路监控/评估体系） | 2025.04–05 | ✅ 完成 |
 
 详见 [ROADMAP.md](ROADMAP.md)。Agent 不是本项目的起点——第四阶段才考虑。
 
@@ -68,6 +69,8 @@ RAG 在这里只是检索能力，不是项目本身。核心命题是双向结�
 │   │                         # kb_chunking（~600 字切块）+ capability_extractor（能力卡 + 后台任务）
 │   │                         # matching/（M3 需求-能力匹配）+ generation/（M4 标书生成引擎）
 │   │                         # quality/（M5 一致性/完整性/事实/格式检查 + 评分 + 终版闭环）
+│   │                         # auth/（M7 认证/RBAC/审计）+ task_tracker + trace（M7 任务中心 + Agent 链路）
+│   │                         # evaluation/（M7 检索/生成/趋势评估）
 │   └── data/
 │       ├── samples/          # 样例招标文件包 + 样例企业资料包（入库，测试确定性来源）
 │       ├── raw/ parsed/      # 上传原文与解析产物（gitignored）
@@ -80,8 +83,9 @@ RAG 在这里只是检索能力，不是项目本身。核心命题是双向结�
 │   ├── verify_m4_generation.py  # M4 标书生成引擎验收核查（章节/覆盖/可追溯/文件）
 │   ├── verify_m5_quality.py     # M5 质量检查引擎验收核查（基线 + 9 组变异 + 终版闭环）
 │   ├── verify_m6_workbench.py   # M6 工作台验收核查（聚合字段/六阶段/SSE/前端文件）
+│   ├── verify_m7_enterprise.py  # M7 企业级能力验收核查（认证/RBAC/审计/版本/任务/链路/评估）
 │   └── probe_milvus.py          # Milvus 兼容性探针（临时集合 spike，不碰既有集合）
-├── tests/                    # M1-M6 离线用例 + llm/milvus 标记集成用例
+├── tests/                    # M1-M7 离线用例 + llm/milvus 标记集成用例
 ├── frontend/                 # Vue3 + Vite + Element Plus（M6 工作台：8 页面 + 5 组件 + 聚合 + SSE）
 └── docs/                     # 技术白皮书（留待后续）
 ```
@@ -131,9 +135,14 @@ python scripts/verify_m5_quality.py            # 质量检查引擎（基线 + 9
 
 # 10. M6 工作台端到端（同一 T-M3 验收基线；报告 scripts/_m6_verify_report.txt）
 python scripts/verify_m6_workbench.py          # 工作台聚合 + 六阶段派生 + SSE + 前端文件
+
+# 11. M7 企业级能力端到端（需服务运行中；报告 scripts/_m7_verify_report.txt）
+python scripts/verify_m7_enterprise.py         # 认证/RBAC/审计/知识库版本/任务中心/Agent 链路/评估
 ```
 
-## 六、API 一览（M1 + M2 + M3 + M4 + M5 + M6）
+M7 演示账号（`AUTH_ENABLED=true` 默认启用）：`admin/admin123`（管理员）、`manager/manager123`（投标经理）、`editor/editor123`（标书编辑）、`reviewer/reviewer123`（审核员）、`staff/staff123`（普通员工）。M7 环境变量：`JWT_SECRET`（HS256 签名密钥，生产必须覆盖默认值）、`JWT_EXPIRE_HOURS`、`ADMIN_USERNAME`/`ADMIN_PASSWORD`（管理员口令）、`AUTH_ENABLED`（false 时系统用户降级，无鉴权部署/离线验收用）。
+
+## 六、API 一览（M1 + M2 + M3 + M4 + M5 + M6 + M7）
 
 | 端点 | 说明 |
 |---|---|
@@ -198,6 +207,19 @@ M6（标书工作台，`/api/workbench` + 生成 SSE）：
 | `GET /api/workbench/projects/{id}` | 单项目概览（+ 文档明细 + 待处理问题前 5 条按严重度排序；未知项目 404） |
 | `GET /api/generation/tenders/{id}/jobs/{job_id}/events` | SSE 流式生成进度（tail generation_logs；job 终态推 `event: done` 关闭流；未知 job/tender 404） |
 
+M7（企业级能力，`/api/auth` + `/api/admin` + `/api/projects` + `/api/knowledge/versions` + `/api/tasks` + `/api/eval`）：
+
+| 端点 | 说明 |
+|---|---|
+| `POST /api/auth/login` / `POST /api/auth/logout` / `GET /api/auth/me` | 登录（返回 token + roles + permissions）/ 登出 / 当前用户 |
+| `GET /api/admin/users` | 用户列表（仅 admin；seed_rbac 幂等种子 5 演示账号） |
+| `GET /api/admin/audit-logs?action=&resource_type=&actor=` | 操作审计全量留痕 + 过滤（仅 admin） |
+| `GET /api/admin/traces?task_type=&target_id=` / `GET /api/admin/llm-calls` | Agent 链路 trace/span 两级 + LLM 调用指标（仅 admin） |
+| `POST /api/projects/{id}/members` / `GET ...` / `DELETE ...` | 项目成员增删查（`final:*` 权限三段判定额外要求成员身份；重复添加 409） |
+| `GET /api/knowledge/versions` | 知识库版本行（KV-xxxx + `{日期}-v{n}` label；资料重处理/能力卡修订自动升版） |
+| `GET /api/tasks` / `GET /api/tasks/{id}` / `POST /api/tasks/{id}/cancel` | 任务中心（5 类任务统一登记；非 admin 只见自己任务；cancel 仅 pending：本人→cancelled/他人 403/running 409/终态 409/不存在 404） |
+| `GET /api/eval/retrieval` / `GET /api/eval/generation` / `GET /api/eval/trends` / `GET /api/eval/summary` | 评估体系（Recall@K/MRR、生成 4 指标、质量趋势、三合一 summary；均带 disclaimer） |
+
 ## 七、已知限制（如实记录）
 
 - docx 无页码信息（Word 页面属于渲染层），docx 来源需求/能力卡的出处锚点以**章节路径 + 块号**为准；PDF 才锚定页码（docx 能力卡 source_page 恒为空，不采信 LLM 臆测页码）
@@ -210,6 +232,10 @@ M6（标书工作台，`/api/workbench` + 生成 SSE）：
 - M5 检查（事实/完整性/一致性/格式）：事实区排除需求回显章节（CH-08 响应表、CH-05-4 技术指标表实时回显需求原文，不参与数字/冲突判定）；语义覆盖审查默认关闭（include_llm=true 才跑，需配置 .env 的 LLM_API_KEY，FakeLLM/无 Key 空返回不新增 issue）
 - M5 终版跳过 PDF（final.docx + final.md + quality-report.json 三件套）；quality report 以结构化 JSON 落盘，Markdown 报告另出；PDF 为已知限制，留待后续阶段
 - M6 工作台聚合为只读派生（SQL 聚合 + 六阶段状态由数据派生，不落库）；生成 SSE 断连可回退轮询 job 状态端点；质量工作台"定位章节"按钮跳转生成工作台（不解析章节号精确定位），为有意简化
+- M7 认证：JWT_SECRET 默认值仅本机开发用，生产必须覆盖；`AUTH_ENABLED=false` 时系统用户降级（无鉴权部署，审计记 system 用户）
+- M7 任务中心：running 任务不可取消（BackgroundTasks 不可杀 → 409 语义）；任务登记表为过程记录（清理验收数据不触碰用户业务数据）
+- M7 监控：llm_calls 仅增强 LLM 客户端（配置真实 LLM_API_KEY）落库，MockLLM 不记录调用（离线口径恒 0）；trace/span 写库失败不影响业务本体（旁路）
+- M7 评估：评估数字为 BidForge 内部离线评估集口径（T-M3 基线 + 样例文件），不代表通用准确率；每个评估响应均带 disclaimer
 
 ## 八、惯例与纪律
 

@@ -247,7 +247,7 @@ def start_generation(tender_id: str, background_tasks: BackgroundTasks,
     task = create_task(db, "generate", target_id=tender_id, ref_id=job.id,
                        started_by=user["id"])
     background_tasks.add_task(run_generation_task, tender_id, job.id,
-                              section_id, "", task["id"])
+                              section_id, "", task["id"], user["id"])
     record_audit(db, user, "generate_bid", "generation_job", job.id,
                  detail=f"tender_id={tender_id} section_id={section_id or '全量'}")
     return {"tender_id": tender_id, "job_id": job.id, "status": "生成中",
@@ -306,7 +306,7 @@ def regenerate_section(tender_id: str, section_id: str,
     task = create_task(db, "generate", target_id=tender_id, ref_id=job.id,
                        started_by=user["id"])
     background_tasks.add_task(run_generation_task, tender_id, job.id,
-                              section_id, "", task["id"])
+                              section_id, "", task["id"], user["id"])
     record_audit(db, user, "regenerate_section", "generation_job", job.id,
                  detail=f"tender_id={tender_id} section_id={section_id}")
     return {"tender_id": tender_id, "job_id": job.id, "section_id": section_id,

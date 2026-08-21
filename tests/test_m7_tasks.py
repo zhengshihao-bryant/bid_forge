@@ -23,6 +23,7 @@ from app.db import Database
 from app.services.task_tracker import (cancel_task, create_task, fail_task,
                                        start_task, succeed_task,
                                        update_progress)
+from app.services.trace import AgentTracer
 
 
 @pytest.fixture()
@@ -62,6 +63,38 @@ def test_tracker_state_machine(tmp_env):
     cancel_task(db, t3["id"])
     row = db.query_one("SELECT * FROM tasks WHERE id = ?", (t3["id"],))
     assert row["status"] == "cancelled"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# M7-06 Agent 链路（trace/span 两级）
+# ═══════════════════════════════════════════════════════════════════════
+def test_tracer_records_success_and_failure(tmp_env):
+    """AgentTracer：span 正常退出 success；异常 failed 后重抛；finish 落终态。"""
+    db = Database()
+    db.init_schema()
+    tracer = AgentTracer(db)
+
+    tid = tracer.start("extract", target_id="T-1", user_id="u1")
+    assert tid
+    with tracer.span(tid, "load_docs", "读取解析产物"):
+        pass
+    tracer.finish(tid, "success")
+    trace = db.query_one("SELECT * FROM agent_traces WHERE id = ?", (tid,))
+    assert trace["status"] == "success"
+    assert trace["task_type"] == "extract" and trace["target_id"] == "T-1"
+    assert trace["user_id"] == "u1"
+    spans = db.query("SELECT * FROM agent_spans WHERE trace_id = ?", (tid,))
+    assert len(spans) == 1 and spans[0]["status"] == "success"
+
+    tid2 = tracer.start("extract", target_id="T-2")
+    with pytest.raises(ValueError):
+        with tracer.span(tid2, "load_docs"):
+            raise ValueError("boom")
+    tracer.finish(tid2, "failed", error="boom")
+    spans2 = db.query("SELECT * FROM agent_spans WHERE trace_id = ?", (tid2,))
+    assert spans2[0]["status"] == "failed"
+    trace2 = db.query_one("SELECT * FROM agent_traces WHERE id = ?", (tid2,))
+    assert trace2["status"] == "failed" and trace2["error"] == "boom"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -131,12 +164,27 @@ def test_task_center_full_chain(client, auth_user, seed_m5, tmp_env,
     assert by_type["generate"]["ref_id"] == job_row["id"]
     assert by_type["generate"]["target_id"] == tender_id
 
+    # M7-06：5 类任务各留一条 success trace（带 spans；user_id 经端点传入）
+    traces = db.query("SELECT * FROM agent_traces")
+    t_by_type = {t["task_type"]: t for t in traces}
+    assert set(t_by_type) >= {"extract", "kb_process", "match", "generate",
+                              "quality_check"}, f"缺 trace 类型: {sorted(t_by_type)}"
+    for tt, t in t_by_type.items():
+        assert t["status"] == "success", f"{tt} trace: {t['status']} {t['error']}"
+        spans = db.query(
+            "SELECT * FROM agent_spans WHERE trace_id = ?", (t["id"],))
+        assert spans, f"{tt} trace 无 span"
+        assert all(s["status"] == "success" for s in spans)
+    assert t_by_type["extract"]["user_id"] == manager["id"]
+    assert t_by_type["quality_check"]["user_id"] == "U-REVIEWER"
+    assert t_by_type["generate"]["target_id"] == tender_id
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # 失败路径
 # ═══════════════════════════════════════════════════════════════════════
 def test_task_failure_path(tmp_env):
-    """run_extraction_task：无解析产物 → 任务 failed + error 非空。"""
+    """run_extraction_task：无解析产物 → 任务 failed + error 非空 + trace failed。"""
     from app.services.extraction import run_extraction_task
 
     db = Database()
@@ -148,6 +196,13 @@ def test_task_failure_path(tmp_env):
     row = db.query_one("SELECT * FROM tasks WHERE id = ?", (task["id"],))
     assert row["status"] == "failed"
     assert "解析产物" in row["error"] or "可用" in row["error"]
+    trace = db.query_one(
+        "SELECT * FROM agent_traces WHERE task_type = 'extract' "
+        "AND target_id = 'T-FAIL-TASK'")
+    assert trace and trace["status"] == "failed"
+    spans = db.query("SELECT * FROM agent_spans WHERE trace_id = ?",
+                     (trace["id"],))
+    assert any(s["status"] == "failed" for s in spans)
 
 
 # ═══════════════════════════════════════════════════════════════════════

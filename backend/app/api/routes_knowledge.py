@@ -277,7 +277,8 @@ def process_material(material_id: str, background_tasks: BackgroundTasks,
     db.update("kb_materials", "id", material_id, {"process_status": "处理中"})
     task = create_task(db, "kb_process", target_id=material_id,
                        started_by=user["id"])
-    background_tasks.add_task(run_kb_task, material_id, task["id"])
+    background_tasks.add_task(run_kb_task, material_id, task["id"],
+                              user["id"])
     return {"material_id": material_id, "process_status": "处理中",
             "task_id": task["id"],
             "hint": "轮询 GET /api/knowledge/materials/{id} 查看 process_status / process_progress"}

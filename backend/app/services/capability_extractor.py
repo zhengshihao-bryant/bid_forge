@@ -43,6 +43,7 @@ from .kb_versions import record_version
 from .llm import create_llm_client, llm_call_context
 from .task_tracker import (fail_task, start_task, succeed_task,
                            update_progress)
+from .trace import AgentTracer
 from .vector_store import SqliteVectorStore, get_milvus_store
 
 logger = logging.getLogger(__name__)
@@ -308,17 +309,24 @@ def _next_cap_number(db: Database) -> int:
     return max_n + 1
 
 
-def run_kb_task(material_id: str, task_id: str = "") -> dict:
+def run_kb_task(material_id: str, task_id: str = "",
+                user_id: str = "") -> dict:
     """后台任务入口：清旧数据 → 切块入库 → 嵌入 + upsert（失败仅降级）→ 能力卡提取。
 
     M7-05：task_id 非空时同步任务中心状态（start/progress/succeed/fail）。
     M7-04：完成时写 knowledge_versions 行（material_reprocess）——
     重处理是知识库的版本变更事件，追溯链由此接续。
+    M7-06：Agent 链路（trace/span 两级；user_id 由启动端点传入）——
+    监控旁路写库失败不打断处理本体。
     """
     db = Database(config.DB_PATH)
+    tracer = AgentTracer(db)
+    trace_id = tracer.start("kb_process", target_id=material_id,
+                            user_id=user_id)
     mat = db.query_one("SELECT * FROM kb_materials WHERE id = ?", (material_id,))
     if not mat:
         logger.error("知识库处理任务：资料不存在 material_id=%s", material_id)
+        tracer.finish(trace_id, "failed", error="资料不存在")
         return {"material_id": material_id, "error": "资料不存在"}
 
     if task_id:
@@ -326,14 +334,15 @@ def run_kb_task(material_id: str, task_id: str = "") -> dict:
     db.update("kb_materials", "id", material_id,
               {"process_status": "处理中", "process_progress": "读取解析产物"})
     try:
-        category = CapabilityCategory(mat["category"])
-        file_name = mat["file_name"]
+        with tracer.span(trace_id, "load_docs", "读取解析产物"):
+            category = CapabilityCategory(mat["category"])
+            file_name = mat["file_name"]
 
-        # 1. 解析产物
-        pfile = Path(config.KB_PARSED_DIR) / material_id / mat["parsed_file"]
-        if not pfile.exists():
-            raise ValueError(f"解析产物缺失: {pfile}（请删除资料后重新上传）")
-        doc = ParsedDocument.model_validate_json(pfile.read_text(encoding="utf-8"))
+            # 1. 解析产物
+            pfile = Path(config.KB_PARSED_DIR) / material_id / mat["parsed_file"]
+            if not pfile.exists():
+                raise ValueError(f"解析产物缺失: {pfile}（请删除资料后重新上传）")
+            doc = ParsedDocument.model_validate_json(pfile.read_text(encoding="utf-8"))
 
         # 2. 清旧数据（chunks/卡片/Milvus 全清，重跑幂等）
         db.execute("DELETE FROM kb_chunks WHERE material_id = ?", (material_id,))
@@ -351,50 +360,52 @@ def run_kb_task(material_id: str, task_id: str = "") -> dict:
             if task_id:
                 update_progress(db, task_id, done, total, msg)
 
-        # 3. 切块入库
-        chunks = build_chunks(doc, material_id, file_name, category,
-                              max_chars=config.KB_CHUNK_CHARS)
-        for c in chunks:
-            db.insert("kb_chunks", Database.chunk_to_row(c))
-        db.update("kb_materials", "id", material_id,
-                  {"process_progress": f"{len(chunks)} 块已入库，嵌入中"})
+        with tracer.span(trace_id, "chunk_embed", "切块 + 嵌入"):
+            # 3. 切块入库
+            chunks = build_chunks(doc, material_id, file_name, category,
+                                  max_chars=config.KB_CHUNK_CHARS)
+            for c in chunks:
+                db.insert("kb_chunks", Database.chunk_to_row(c))
+            db.update("kb_materials", "id", material_id,
+                      {"process_progress": f"{len(chunks)} 块已入库，嵌入中"})
 
-        # 4. 嵌入 + 向量写入（失败仅 index_status=degraded，不整任务失败）
-        index_status = "done"
-        try:
-            rows = [
-                {"chunk_id": c.id, "material_id": c.material_id,
-                 "category": c.category.value, "file_name": c.file_name,
-                 "section_path": c.section_path,
-                 "page_start": c.page_start, "page_end": c.page_end,
-                 "block_ids": c.block_ids, "content": c.content}
-                for c in chunks
-            ]
-            vecs = create_embedding().embed([c.content for c in chunks])
-            for r, v in zip(rows, vecs):
-                r["embedding"] = v
-            SqliteVectorStore(db).upsert(rows)   # 事实源向量回填（降级检索/重建索引用）
-            if milvus is not None:
-                milvus.upsert(rows)              # 可重建索引（bid_chunks）
-        except Exception as e:  # noqa: BLE001 —— 嵌入失败不整任务失败，SQLite 检索仍可用
-            index_status = "degraded"
-            logger.warning("向量索引写入失败（index_status=degraded）: %s", str(e)[:300])
+            # 4. 嵌入 + 向量写入（失败仅 index_status=degraded，不整任务失败）
+            index_status = "done"
+            try:
+                rows = [
+                    {"chunk_id": c.id, "material_id": c.material_id,
+                     "category": c.category.value, "file_name": c.file_name,
+                     "section_path": c.section_path,
+                     "page_start": c.page_start, "page_end": c.page_end,
+                     "block_ids": c.block_ids, "content": c.content}
+                    for c in chunks
+                ]
+                vecs = create_embedding().embed([c.content for c in chunks])
+                for r, v in zip(rows, vecs):
+                    r["embedding"] = v
+                SqliteVectorStore(db).upsert(rows)   # 事实源向量回填（降级检索/重建索引用）
+                if milvus is not None:
+                    milvus.upsert(rows)              # 可重建索引（bid_chunks）
+            except Exception as e:  # noqa: BLE001 —— 嵌入失败不整任务失败，SQLite 检索仍可用
+                index_status = "degraded"
+                logger.warning("向量索引写入失败（index_status=degraded）: %s", str(e)[:300])
 
-        # 5. 能力卡提取（历史标书只切块嵌入，不提取卡片）
-        caps: list[Capability] = []
-        cap_stats = {"windows": 0, "llm_calls": 0, "dropped_items": 0,
-                     "retries": 0, "windows_failed": 0}
-        if category != CapabilityCategory.HISTORICAL_BID:
-            extractor = CapabilityExtractor(create_llm_client(), progress_cb=progress_cb)
-            caps, cap_stats = extractor.extract(file_name, category, doc,
-                                                start_no=_next_cap_number(db))
-            if mat["file_type"] == "docx":
-                # docx 无页码（Word 页面属渲染层），LLM 返回的 page 是臆测值 → 置空，
-                # 与 SourceAnchor 口径一致：docx 以章节路径 + block_ids 溯源
+        with tracer.span(trace_id, "extract_caps", "能力卡提取"):
+            # 5. 能力卡提取（历史标书只切块嵌入，不提取卡片）
+            caps: list[Capability] = []
+            cap_stats = {"windows": 0, "llm_calls": 0, "dropped_items": 0,
+                         "retries": 0, "windows_failed": 0}
+            if category != CapabilityCategory.HISTORICAL_BID:
+                extractor = CapabilityExtractor(create_llm_client(), progress_cb=progress_cb)
+                caps, cap_stats = extractor.extract(file_name, category, doc,
+                                                    start_no=_next_cap_number(db))
+                if mat["file_type"] == "docx":
+                    # docx 无页码（Word 页面属渲染层），LLM 返回的 page 是臆测值 → 置空，
+                    # 与 SourceAnchor 口径一致：docx 以章节路径 + block_ids 溯源
+                    for cap in caps:
+                        cap.source_page = None
                 for cap in caps:
-                    cap.source_page = None
-            for cap in caps:
-                db.insert("capabilities", Database.capability_to_row(cap))
+                    db.insert("capabilities", Database.capability_to_row(cap))
 
         # 6. 收尾
         summary = (f"{len(chunks)} 块 / {len(caps)} 张卡片 / 索引 {index_status} / "
@@ -415,6 +426,7 @@ def run_kb_task(material_id: str, task_id: str = "") -> dict:
         if task_id:
             succeed_task(db, task_id, total=len(chunks), done=len(chunks),
                          progress=summary)
+        tracer.finish(trace_id, "success")
         return {"material_id": material_id, "chunks": len(chunks),
                 "capabilities": len(caps), "index_status": index_status,
                 "stats": cap_stats}
@@ -424,6 +436,7 @@ def run_kb_task(material_id: str, task_id: str = "") -> dict:
                   {"process_status": "失败", "process_progress": str(e)[:500]})
         if task_id:
             fail_task(db, task_id, error=str(e))
+        tracer.finish(trace_id, "failed", error=str(e))
         return {"material_id": material_id, "error": str(e)}
 
 

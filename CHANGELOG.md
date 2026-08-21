@@ -3,6 +3,22 @@
 > 口径：各里程碑验收数字基于项目内置离线评估集与样例数据（T-M3 基线），不代表通用准确率。
 > 版本节奏沿用五里程碑封版惯例；推送由仓库所有者执行。
 
+## v1.1.0（2026-08-19）
+
+M7 企业级能力（第四阶段首批）完成，封版。
+
+### M7 企业级能力（认证/RBAC/审计/知识库版本/任务中心/Agent 链路监控/评估体系）
+
+- 认证（M7-01）：PBKDF2 600k 口令散列 + JWT HS256（登录/登出/me）；5 个演示账号（admin/manager/editor/reviewer/staff）；错误口令记 login_failed 审计；`AUTH_ENABLED=false` 时系统用户降级（无鉴权部署仍可跑验收）
+- RBAC（M7-02）：5 角色 × 17 权限矩阵 + seed_rbac 幂等；`require_project_permission` 三段判定（admin 旁路 → 权限检查 → `final:*` 额外要求项目成员身份）；项目成员增删查（重复添加 409）
+- 操作审计（M7-03）：audit_logs 全量留痕（13 类关键动作：登录/失败登录/上传/生成/修订/质检/终版/成员变更/取消任务/查看终版等），action/resource/actor 过滤，仅 admin 可见
+- 知识库版本（M7-04）：KV-xxxx 版本行 + `{日期}-v{n}` label；资料重处理/能力卡修订自动升版；生成任务 `kb_version` 快照（回答"这份标书用什么知识生成的"）
+- 任务中心（M7-05）：TSK-xxxx 统一任务登记（extract/kb_process/match/generate/quality_check 5 类）+ 进度更新；cancel 仅 pending（本人→cancelled / 他人 403 / running 409 / 终态 409 / 不存在 404）；非 admin 只见自己启动的任务；generate 任务 ref_id 直达生成 job
+- Agent 链路 + LLM 监控（M7-06）：AgentTracer trace/span 两级（success/failed 终态，异常重抛不吞错）；5 类任务全接入（user_id 经端点传入）；llm_calls 记录增强 LLM 客户端调用（MockLLM 不记录——离线口径）；监控写库失败绝不打断业务（旁路）
+- 评估体系（M7-07）：检索评估（合并 Recall@K/MRR）、生成评估（引用完整率/引用准确率/事实一致率/需求覆盖率）、质量趋势（相邻报告 delta）、三合一 summary；每个响应带 disclaimer
+- 验收：HTTP 端到端 **52/52 全 OK** —— 5 演示账号登录 + admin 17/17 权限；RBAC 越权抽查 8 项全 403 + 项目成员闭环 6 步 + workbench delivery_only；审计 31 条含 13/13 类动作 + 过滤 + 仅 admin；知识库版本 2026-08-19-v1/-v2 + 生成任务快照最新 label；任务中心 5 类 × 7 条任务全 success + cancel 五态语义 + 可见性过滤；traces 5 类 success（spans≥1）+ user_id 正确；评估 Recall@10=0.9231 / MRR=0.7173（evaluated=13）、生成 4 指标全 1.0（事实核对 36 条 0 问题、需求覆盖 forward 33/33 + reverse 36/36）、趋势 2 期 1 delta
+- 验收修复：pytest.ini 补充 `addopts = -m "not llm and not milvus"`（marker 注释早已宣称"默认跳过"但此前未配置——裸跑 `pytest -q` 时 milvus 回环测试在无 docker 环境连接失败；现默认命令即离线全绿）
+
 ## v1.0.0（2026-08-18）
 
 五里程碑 + 标书工作台全部完成，封版。

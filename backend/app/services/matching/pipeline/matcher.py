@@ -28,6 +28,7 @@ from .... import config
 from ....db import Database
 from ...task_tracker import (fail_task, start_task, succeed_task,
                              update_progress)
+from ...trace import AgentTracer
 from ..classify import RequirementClassifier
 from ..extract import ConstraintExtractor
 from ..judge import HeuristicJudge, LLMJudge
@@ -256,29 +257,36 @@ class Matcher:
 # ---------------------------------------------------------------------------
 # 后台任务入口（镜像 run_extraction_task 状态机；matching_runs 表可轮询）
 # ---------------------------------------------------------------------------
-def run_matching_task(tender_id: str, task_id: str = "") -> dict:
+def run_matching_task(tender_id: str, task_id: str = "",
+                      user_id: str = "") -> dict:
     """后台任务入口：标准化 + 匹配 + 落库，matching_runs 记录状态。
 
     M7-05：task_id 非空时同步任务中心状态（start/progress/succeed/fail）。
+    M7-06：Agent 链路（trace/span 两级；user_id 由启动端点传入）——
+    监控旁路写库失败不打断匹配本体。
     """
     db = Database(config.DB_PATH)
+    tracer = AgentTracer(db)
+    trace_id = tracer.start("match", target_id=tender_id, user_id=user_id)
     tender = db.query_one("SELECT * FROM tenders WHERE id = ?", (tender_id,))
     if not tender:
         logger.error("匹配任务：招标项目不存在 tender_id=%s", tender_id)
+        tracer.finish(trace_id, "failed", error="招标项目不存在")
         return {"tender_id": tender_id, "error": "招标项目不存在"}
 
     if task_id:
         start_task(db, task_id)
     _upsert_run(db, tender_id, "匹配中", "标准化需求")
     try:
-        matcher = Matcher(db)
+        with tracer.span(trace_id, "match", "标准化 + 逐条匹配 + 判定"):
+            matcher = Matcher(db)
 
-        def progress_cb(done: int, total: int, msg: str) -> None:
-            _upsert_run(db, tender_id, "匹配中", f"[{done}/{total}] {msg}")
-            if task_id:
-                update_progress(db, task_id, done, total, msg)
+            def progress_cb(done: int, total: int, msg: str) -> None:
+                _upsert_run(db, tender_id, "匹配中", f"[{done}/{total}] {msg}")
+                if task_id:
+                    update_progress(db, task_id, done, total, msg)
 
-        report = matcher.match(tender_id, progress_cb=progress_cb)
+            report = matcher.match(tender_id, progress_cb=progress_cb)
         canon_n = db.query_one(
             "SELECT COUNT(*) AS n FROM canonical_requirements WHERE tender_id = ?",
             (tender_id,))["n"]
@@ -288,6 +296,7 @@ def run_matching_task(tender_id: str, task_id: str = "") -> dict:
         if task_id:
             succeed_task(db, task_id, done=report.total, total=report.total,
                          progress=f"{report.total} 条需求 / {report.counts}")
+        tracer.finish(trace_id, "success")
         return {"tender_id": tender_id, "status": "已完成",
                 "total": report.total, "counts": report.counts}
     except Exception as e:  # noqa: BLE001 —— 状态机兜底，错误透出到 runs 表
@@ -295,6 +304,7 @@ def run_matching_task(tender_id: str, task_id: str = "") -> dict:
         _upsert_run(db, tender_id, "失败", f"匹配失败: {str(e)[:300]}")
         if task_id:
             fail_task(db, task_id, error=str(e))
+        tracer.finish(trace_id, "failed", error=str(e))
         return {"tender_id": tender_id, "status": "失败", "error": str(e)}
 
 
