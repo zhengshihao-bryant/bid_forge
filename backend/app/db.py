@@ -392,6 +392,148 @@ class Database:
         )
 
 
+    # ------------------------------------------------------------------
+    # M4：Outline / SectionDraft / BidSection / GenerationJob ↔ 行 映射
+    # generation_sections 单表 = 规划 + 草稿：写入用 planning_to_row（插入）/
+    # draft_to_row（更新），读出用 row_to_bid_section（规划）/ row_to_section（草稿）
+    # ------------------------------------------------------------------
+    @staticmethod
+    def outline_to_row(o: "OutlineTemplate") -> dict:
+        return {
+            "id": o.id, "name": o.name, "description": o.description,
+            "chapters": json.dumps(o.chapters, ensure_ascii=False,
+                                   default=lambda x: x.model_dump(mode="json")),
+            "created_at": o.created_at,
+        }
+
+    @staticmethod
+    def row_to_outline(row: dict) -> "OutlineTemplate":
+        from .schemas import ChapterSpec, OutlineTemplate
+
+        chapters = json.loads(row.get("chapters") or "[]")
+        return OutlineTemplate(
+            id=row["id"], name=row.get("name") or "通用标书结构",
+            description=row.get("description") or "",
+            chapters=[ChapterSpec(**c) for c in chapters],
+            created_at=row.get("created_at") or now_str(),
+        )
+
+    @staticmethod
+    def planning_to_row(s: "BidSection", generation_id: str = "",
+                        tender_id: str = "") -> dict:
+        """章节规划 → generation_sections 全行（草稿列为空）。"""
+        return {
+            "section_id": s.id, "generation_id": generation_id,
+            "tender_id": tender_id or s.tender_id,
+            "chapter_id": getattr(s, "chapter_id", "") or "",
+            "parent_id": s.parent_id, "title": s.title,
+            "section_type": s.section_type.value,
+            "ord": s.ord, "level": s.level,
+            "requirement_types": json.dumps(s.requirement_types, ensure_ascii=False),
+            "allowed_categories": json.dumps(s.allowed_categories, ensure_ascii=False),
+            "source_refs": json.dumps(s.source_refs, ensure_ascii=False),
+            "coverage": "[]", "evidence_refs": "[]", "paragraphs": "[]",
+            "warnings": "[]", "status": s.status.value,
+            "draft_status": "草稿", "attempt": 0, "error": "",
+            "content_md": "", "metadata": "{}", "version": 1,
+            "created_at": now_str(), "updated_at": now_str(),
+        }
+
+    @staticmethod
+    def draft_to_row(d: "SectionDraft") -> dict:
+        """章节草稿 → generation_sections 草稿列（用于 update，不含规划列）。"""
+        return {
+            "generation_id": d.generation_id, "title": d.title,
+            "section_type": d.section_type.value,
+            "coverage": json.dumps(
+                [c.model_dump(mode="json") for c in d.requirement_coverage],
+                ensure_ascii=False),
+            "evidence_refs": json.dumps(
+                [e.model_dump(mode="json") for e in d.evidence_refs],
+                ensure_ascii=False),
+            "paragraphs": json.dumps(
+                [p.model_dump(mode="json") for p in d.paragraphs],
+                ensure_ascii=False),
+            "warnings": json.dumps(d.warnings, ensure_ascii=False),
+            "draft_status": d.status.value,
+            "content_md": d.content_md,
+            "metadata": json.dumps(d.generation_metadata, ensure_ascii=False),
+            "version": d.version, "updated_at": now_str(),
+        }
+
+    @staticmethod
+    def row_to_bid_section(row: dict) -> "BidSection":
+        from .services.generation.models import BidSection, SectionStatus, SectionType
+
+        return BidSection(
+            id=row["section_id"], tender_id=row["tender_id"],
+            parent_id=row.get("parent_id") or "",
+            title=row["title"], level=row.get("level") or 1,
+            ord=row.get("ord") or 0,
+            section_type=SectionType(row.get("section_type") or "方案型"),
+            source_refs=json.loads(row.get("source_refs") or "[]"),
+            requirement_types=json.loads(row.get("requirement_types") or "[]"),
+            allowed_categories=json.loads(row.get("allowed_categories") or "[]"),
+            generation_prompt="",
+            status=SectionStatus(row.get("status") or "待生成"),
+        )
+
+    @staticmethod
+    def row_to_section(row: dict) -> "SectionDraft":
+        from .schemas import DraftStatus
+        from .services.generation.models import (CoverageItem, EvidenceRef,
+                                                 Paragraph, SectionDraft,
+                                                 SectionType)
+
+        return SectionDraft(
+            section_id=row["section_id"], tender_id=row["tender_id"],
+            generation_id=row.get("generation_id") or "",
+            title=row["title"],
+            section_type=SectionType(row.get("section_type") or "方案型"),
+            paragraphs=[Paragraph(**p) for p in json.loads(row.get("paragraphs") or "[]")],
+            requirement_coverage=[CoverageItem(**c) for c in
+                                  json.loads(row.get("coverage") or "[]")],
+            evidence_refs=[EvidenceRef(**e) for e in
+                           json.loads(row.get("evidence_refs") or "[]")],
+            warnings=json.loads(row.get("warnings") or "[]"),
+            status=DraftStatus(row.get("draft_status") or "草稿"),
+            content_md=row.get("content_md") or "",
+            generation_metadata=json.loads(row.get("metadata") or "{}"),
+            version=row.get("version") or 1,
+            created_at=row.get("created_at") or now_str(),
+            updated_at=row.get("updated_at") or now_str(),
+        )
+
+    @staticmethod
+    def job_to_row(j: "GenerationJob") -> dict:
+        return {
+            "id": j.id, "tender_id": j.tender_id, "outline_id": j.outline_id,
+            "status": j.status, "progress": j.progress,
+            "section_states": json.dumps(j.section_states, ensure_ascii=False),
+            "total_sections": j.total_sections, "done_sections": j.done_sections,
+            "failed_sections": j.failed_sections, "error": j.error,
+            "created_at": j.created_at, "updated_at": j.updated_at,
+        }
+
+    @staticmethod
+    def row_to_job(row: dict) -> "GenerationJob":
+        from .services.generation.models import GenerationJob
+
+        return GenerationJob(
+            id=row["id"], tender_id=row["tender_id"],
+            outline_id=row.get("outline_id") or "",
+            status=row.get("status") or "未生成",
+            progress=row.get("progress") or "",
+            section_states=json.loads(row.get("section_states") or "{}"),
+            total_sections=row.get("total_sections") or 0,
+            done_sections=row.get("done_sections") or 0,
+            failed_sections=row.get("failed_sections") or 0,
+            error=row.get("error") or "",
+            created_at=row.get("created_at") or now_str(),
+            updated_at=row.get("updated_at") or now_str(),
+        )
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # DDL（M2/M3 表预建，向前兼容）
 # ═══════════════════════════════════════════════════════════════════════
@@ -614,6 +756,80 @@ CREATE TABLE IF NOT EXISTS drafts (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_drafts_tender ON drafts(tender_id);
+
+-- M4：标书生成引擎（规划 + 生成 + 任务）
+-- generation_jobs：生成任务（uuid 主键，一个 tender 可多次生成；镜像 matching_runs 状态机）
+CREATE TABLE IF NOT EXISTS generation_jobs (
+    id TEXT PRIMARY KEY,
+    tender_id TEXT NOT NULL,
+    outline_id TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT '未生成',
+    progress TEXT NOT NULL DEFAULT '',
+    section_states TEXT NOT NULL DEFAULT '{}',
+    total_sections INTEGER NOT NULL DEFAULT 0,
+    done_sections INTEGER NOT NULL DEFAULT 0,
+    failed_sections INTEGER NOT NULL DEFAULT 0,
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_generation_jobs_tender ON generation_jobs(tender_id);
+
+-- generation_sections：章节实例 = 规划 + 草稿单表（parent_id + ord 前序重组章节树）
+-- status 为生成生命周期（待生成/生成中/已完成/失败/跳过），draft_status 为人工编辑
+-- 生命周期（草稿/已编辑/已确认）；M4-06 富结构稿的 JSON 列装不下 drafts 老表故另立。
+CREATE TABLE IF NOT EXISTS generation_sections (
+    section_id TEXT PRIMARY KEY,
+    generation_id TEXT NOT NULL DEFAULT '',
+    tender_id TEXT NOT NULL,
+    chapter_id TEXT NOT NULL DEFAULT '',
+    parent_id TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL,
+    section_type TEXT NOT NULL DEFAULT '方案型',
+    ord INTEGER NOT NULL DEFAULT 0,          -- order 是 SQL 保留字
+    level INTEGER NOT NULL DEFAULT 1,
+    requirement_types TEXT NOT NULL DEFAULT '[]',
+    allowed_categories TEXT NOT NULL DEFAULT '[]',
+    source_refs TEXT NOT NULL DEFAULT '[]',
+    coverage TEXT NOT NULL DEFAULT '[]',
+    evidence_refs TEXT NOT NULL DEFAULT '[]',
+    paragraphs TEXT NOT NULL DEFAULT '[]',
+    warnings TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT '待生成',
+    draft_status TEXT NOT NULL DEFAULT '草稿',
+    attempt INTEGER NOT NULL DEFAULT 0,
+    error TEXT NOT NULL DEFAULT '',
+    content_md TEXT NOT NULL DEFAULT '',
+    metadata TEXT NOT NULL DEFAULT '{}',
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_generation_sections_tender ON generation_sections(tender_id);
+CREATE INDEX IF NOT EXISTS idx_generation_sections_job ON generation_sections(generation_id);
+
+-- requirement_section_maps：需求→章节映射（一对多）
+CREATE TABLE IF NOT EXISTS requirement_section_maps (
+    tender_id TEXT NOT NULL,
+    requirement_id TEXT NOT NULL,
+    section_id TEXT NOT NULL,
+    basis TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (requirement_id, section_id)
+);
+CREATE INDEX IF NOT EXISTS idx_req_section_map_section ON requirement_section_maps(section_id);
+
+-- generation_logs：章节级生成日志（SSE tail / 断点诊断）
+CREATE TABLE IF NOT EXISTS generation_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    generation_id TEXT NOT NULL,
+    section_id TEXT NOT NULL DEFAULT '',
+    level TEXT NOT NULL DEFAULT 'info',
+    message TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_generation_logs_job ON generation_logs(generation_id);
+
 """
 
 

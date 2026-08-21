@@ -355,7 +355,12 @@ class MatchResult(BaseModel):
 
 
 class ChapterSpec(BaseModel):
-    """标书模板章节 —— 每章声明：响应哪些需求类型、允许引用哪些资料类别。"""
+    """标书模板章节 —— 每章声明：响应哪些需求类型、允许引用哪些资料类别。
+
+    M4 新增 section_type（方案型/事实型/表格型/固定格式，对应 M4-08 内容类型）
+    与 source_refs（关联原始招标文件章节路径）；section_type 用中文串
+    （与 SectionType 枚举值一致，见 services/generation/models.py）。
+    """
     id: str = ""                           # CH-01 起
     order: int
     title: str
@@ -363,6 +368,8 @@ class ChapterSpec(BaseModel):
     requirement_types: list[RequirementType] = Field(default_factory=list)
     allowed_categories: list[CapabilityCategory] = Field(default_factory=list)
     generation_prompt: str = ""            # 本章生成提示词（可覆盖默认）
+    section_type: str = "方案型"           # 方案型 / 事实型 / 表格型 / 固定格式（M4-08）
+    source_refs: list[str] = Field(default_factory=list)   # 关联原始招标章节 path
     children: list[ChapterSpec] = Field(default_factory=list)
 
 

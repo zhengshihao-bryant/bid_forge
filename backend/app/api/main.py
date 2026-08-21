@@ -42,6 +42,7 @@ from fastapi.staticfiles import StaticFiles
 from .. import config
 from ..db import Database
 from ..services.vector_store import get_milvus_store
+from .routes_generation import router as generation_router
 from .routes_knowledge import router as knowledge_router
 from .routes_matching import router as matching_router
 from .routes_tenders import router as tenders_router
@@ -91,6 +92,7 @@ app.add_middleware(
 app.include_router(tenders_router)
 app.include_router(knowledge_router)
 app.include_router(matching_router)
+app.include_router(generation_router)
 
 
 # ═══════════════════════════════════════════════════════════════════════

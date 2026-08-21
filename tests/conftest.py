@@ -274,3 +274,37 @@ def m3_env(monkeypatch, tmp_env):
     fake_emb = FakeEmbedding(dimension=config.EMBEDDING_DIM)
     monkeypatch.setattr(embedding, "create_embedding", lambda: fake_emb)
     return fake_emb
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# M4 标书生成种子（批次 2 起共享）
+# ═══════════════════════════════════════════════════════════════════════
+@pytest.fixture()
+def seed_m4(tmp_env, m3_env):
+    """M4 全种子：M3 匹配结果 + 默认大纲实例化 + 需求→章节映射落库。
+
+    = M3 基线（_tender_reqs + seed_m3_kb + Matcher().match）＋
+      outline seed/materialize → generation_sections ＋
+      RequirementSectionMapper.map_all → requirement_section_maps
+
+    返回 {db, tender_id, sections(flat BidSection 列表), coverage, builder, mapper}。
+    数据源单一（test_m3_matcher），M4 各批次测试共享。
+    """
+    import test_m3_matcher as tm
+
+    from app.services.generation import OutlineBuilder, RequirementSectionMapper
+
+    db = tm._setup(tmp_env, m3_env)
+    tm._run(db)
+    tender_id = tm.TENDER_ID
+    builder = OutlineBuilder(db)
+    outline_id = builder.seed_default()
+    tree = builder.materialize(tender_id, builder.get(outline_id))
+    sections = OutlineBuilder.flatten(tree)
+    for sec in sections:
+        db.insert("generation_sections",
+                  Database.planning_to_row(sec, tender_id=tender_id))
+    mapper = RequirementSectionMapper(db)
+    coverage = mapper.map_all(tender_id)
+    return {"db": db, "tender_id": tender_id, "sections": sections,
+            "coverage": coverage, "builder": builder, "mapper": mapper}
