@@ -2,7 +2,6 @@
 """
 app/services/embedding.py —— 文本嵌入服务（M2 企业知识库）
 
-移植企业法律知识助手的成熟方案（legal-ai-assistant/services/embedding/bge_embedding.py），
 本机踩坑结论（2026-08-14 实测）：
 
 1. **必须 local_files_only=True**：全局环境变量 HF_ENDPOINT=https://hf-mirror.com

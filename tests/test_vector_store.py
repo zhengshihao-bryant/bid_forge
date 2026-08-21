@@ -203,7 +203,7 @@ def test_milvus_roundtrip(tmp_env):
 
     前置：docker start milvus-etcd milvus-minio milvus-standalone，
     并用 scripts/probe_milvus.py 确认兼容。临时集合名 _kb_test_{pid}，测后即删，
-    绝不触碰 bid_chunks 等他人集合。
+    绝不触碰生产集合 bid_chunks。
     """
     import os
 

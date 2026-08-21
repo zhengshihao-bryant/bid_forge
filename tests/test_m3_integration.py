@@ -15,7 +15,7 @@ LLM 测试验收对象：
 Milvus 测试验收对象：
     - Milvus 检索路径（engine == "milvus"）→ SemanticRetriever → Rerank
     - 相关 chunk 排第一、类别过滤生效；临时集合 _m3_test_{pid} 测后即删，
-      绝不触碰 bid_chunks 等他人集合
+      绝不触碰生产集合 bid_chunks
 """
 
 from __future__ import annotations

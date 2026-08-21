@@ -10,8 +10,8 @@ app/services/vector_store.py —— 向量存储抽象 + Milvus / SQLite 双实�
 Milvus 集成要点（2026-08-14 spike 实测，scripts/probe_milvus.py 固化）：
 - pymilvus 3.0.0 MilvusClient 新 API × 本机 Milvus standalone 2.3.3 全链路兼容
   （建集合/插入/检索/过滤删除全部通过）；COSINE 分数方向=越大越相似（已锁定）
-- 用 MilvusClient 而非 ORM Collection/connections——法律助手项目踩过 ORM 弃用警告
-- 集合名 bid_chunks 独立命名：实例内还有 legal_chunks 等他人集合，绝不 drop 他人集合
+- 用 MilvusClient 而非 ORM Collection/connections——ORM 路径有弃用警告风险
+- 集合名 bid_chunks 独立命名：不同服务实例各自独立集合，绝不跨实例操作集合
 - Milvus INT64 字段无 NULL 概念：page_start/page_end 为 None 时插 0（0 = 无页码）
 
 降级策略（MILVUS_ENABLED=false 或 Milvus 挂掉）：

@@ -51,11 +51,11 @@ EXTRACT_WINDOW_CHARS = int(os.getenv("EXTRACT_WINDOW_CHARS", "4000"))
 
 BIDGEN_PORT = int(os.getenv("BIDGEN_PORT", "8001"))
 
-# ── M2：企业知识库（BGE 嵌入 + Milvus，复用法律助手方案）──
+# ── M2：企业知识库（BGE 嵌入 + Milvus，可降级）──
 # Milvus：MILVUS_ENABLED=false 时检索/写入走 SQLite 暴力余弦降级路径
 MILVUS_URI = os.getenv("MILVUS_URI", "http://localhost:19530")
 MILVUS_ENABLED = os.getenv("MILVUS_ENABLED", "true").lower() in ("1", "true", "yes")
-MILVUS_COLLECTION = "bid_chunks"       # 独立集合名：实例内还有法律助手等项目的集合，勿动
+MILVUS_COLLECTION = "bid_chunks"       # 独立集合名（避免与同实例其他服务冲突）
 # 嵌入：bge = 本地 BGE 模型；fake = 确定性伪嵌入（离线测试用）
 # 踩坑：全局 HF_ENDPOINT=hf-mirror 网络不通，BGE 加载必须 local_files_only=True
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-large-zh")

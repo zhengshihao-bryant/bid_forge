@@ -2,7 +2,7 @@
 """
 app/services/llm.py —— LLM 客户端（DeepSeek，OpenAI 兼容协议）
 
-移植企业法律知识助手的成熟模式（legal-ai-assistant/services/llm/client.py）：
+设计要点：
     - 自动重试 + 指数退避（transient errors：429/5xx/超时/连接）
     - 超时控制（120s：需求提取单窗口输出可达 4096 tokens，默认 10s 必挂）
     - 重试次数 3（提取窗口时 Pydantic 校验失败由提取层再兜底一次）

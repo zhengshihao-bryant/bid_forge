@@ -7,8 +7,7 @@ scripts/probe_milvus.py —— M2 第一步：Milvus 连通性 spike
 
 背景（设计阶段实测）：
 - 连接层已通：get_server_version() → v2.3.3
-- 实例内有他人集合（legal_chunks 2658 条、kb_chunks 等）——本脚本只操作自己的
-  临时集合 bid_chunks_probe，用完即 drop，绝不碰其它集合
+- 只操作自己的临时集合 bid_chunks_probe，用完即 drop，绝不碰生产集合
 
 用法：
     python scripts/probe_milvus.py
