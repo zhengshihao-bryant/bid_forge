@@ -176,7 +176,7 @@ flowchart TB
 │   └── probe_milvus.py          # Milvus 兼容性探针（临时集合 spike，不碰既有集合）
 ├── tests/                    # M1-M7 离线用例 + llm/milvus 标记集成用例
 ├── frontend/                 # Vue3 + Vite + Element Plus（M6 工作台：8 页面 + 5 组件 + 聚合 + SSE）
-└── docs/whitepaper/          # 技术白皮书 + 面试问答手册
+└── docs/whitepaper/          # 技术白皮书（架构与设计决策详解）
 ```
 
 ## 五、快速开始
