@@ -114,4 +114,9 @@ class Database(MappersMixin):
 
 
 # ── 从 db_schema 重新导出（保持 from ..db import seed_rbac, get_db 兼容）──
-from .db_schema import get_db, seed_rbac  # noqa: E402,F401
+from .db_schema import (  # noqa: E402,F401
+    M7_PERMISSIONS,
+    M7_ROLE_PERMISSIONS,
+    get_db,
+    seed_rbac,
+)
