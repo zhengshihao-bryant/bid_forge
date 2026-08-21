@@ -1,4 +1,35 @@
-# 企业标书生成平台（Bid Generation Platform）
+# 企业标书生成平台（BidForge · Bid Generation Platform）
+
+![CI](https://github.com/zhengshihao-bryant/bid_forge/actions/workflows/ci.yml/badge.svg)
+![Python](https://img.shields.io/badge/Python-3.10%20%7C%203.11-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688?logo=fastapi&logoColor=white)
+![Vue 3](https://img.shields.io/badge/Vue_3-Vite%20%2B%20Element%20Plus-4FC08D?logo=vuedotjs&logoColor=white)
+![RAG](https://img.shields.io/badge/RAG-Milvus%20%2F%20SQLite-5A29E4)
+![LLM](https://img.shields.io/badge/LLM-DeepSeek%20%28OpenAI%20compatible%29-6A5AF9)
+
+## English Summary
+
+**BidForge** is an enterprise-grade, AI-powered **bid proposal generation platform** that turns 200–500 page tender documents (PDF / Word / Excel / scanned attachments) into compliant, evidence-backed bid proposals. It was built and verified milestone-by-milestone (M1–M7) between 2024.09 and 2025.05.
+
+**What makes it different from "just another RAG":** BidForge treats RAG as only one capability inside a larger, bidirectional-structure pipeline — parsed **Requirements** from tender documents are matched against enterprise **Capabilities** extracted from a company knowledge base, producing evidence-chained match results that drive a template-based generation engine with strict fact-conservation rules (numbers and qualifications may only come from retrieved evidence; anything unverified is rendered as `【待确认】`).
+
+**Feature highlights:**
+
+| Area | What it does |
+|---|---|
+| Tender parsing (M1) | 4 parser types (PDF/Word/Excel/OCR) → unified `ParsedDocument` → structured requirements with 4-way provenance (file/page/section/block) |
+| Enterprise knowledge base (M2) | Capability cards + ~600-char chunking + BGE embeddings + Milvus vector store (auto SQLite fallback) |
+| Requirement–Capability matching (M3) | Normalize → retrieve → rule/LLM judge → evidence verification → conflict arbitration → response table |
+| Proposal generation (M4) | 26-section outline planning, requirement mapping, 4 generation strategies, SSE progress, task state machine, manual editing |
+| Quality & consistency engine (M5) | Fact / completeness / consistency / format checks + 5-dimension scoring + finalization gate |
+| Workbench UI (M6) | Vue 3 + Vite + Element Plus, 8 pages covering the full lifecycle with aggregated dashboards |
+| Enterprise capabilities (M7) | JWT auth, RBAC, audit logging, knowledge-base versioning, task center, Agent-trace monitoring, offline evaluation suite |
+
+**Stack:** Python 3.10+ · FastAPI · SQLite (WAL) · Milvus / SQLite vector store · OpenAI-compatible LLM client (DeepSeek) · Vue 3 · Vite · Element Plus · pytest (offline, FakeLLM/FakeEmbedding by default)
+
+> 完整中文文档（含架构说明、API 一览、已知限制）见下文各章节。
+
+---
 
 > 项目时间线：2024.09 – 2025.05 ｜ 定位：企业级 AI 内容生产 / 文档智能处理系统
 
@@ -39,6 +70,62 @@ RAG 在这里只是检索能力，不是项目本身。核心命题是双向结�
 **事实约束铁律**：生成只允许使用检索证据中出现的数字/资质/年限；证据中没有的量化指标一律输出 `【待确认】`。每条需求四元溯源（文件/页码/章节路径/块号），M3 生成时每个关键数字都能回溯原文。
 
 **评分标准表不走 LLM**：表格交给规则引擎解析（LLM 读表不可靠，规则更准）。
+
+### 系统架构图
+
+```mermaid
+flowchart TB
+    subgraph INPUT["输入层"]
+        T["招标文件<br/>PDF / Word / Excel / 扫描件"]
+        K["企业资料<br/>产品/案例/资质/方案…"]
+    end
+
+    subgraph PARSING["M1 · 解析与需求提取"]
+        P1["四类解析器<br/>ParsedDocument 统一产物"]
+        P2["需求提取管线<br/>六类需求实体 + 四元溯源"]
+    end
+
+    subgraph KB["M2 · 企业知识库"]
+        K1["能力卡提取<br/>Capability"]
+        K2["切块嵌入 ~600字<br/>BGE / FakeEmbedding"]
+        K3["向量存储<br/>Milvus ⇄ SQLite 降级"]
+    end
+
+    subgraph MATCH["M3 · 需求-能力匹配"]
+        M1["归一化 / 分类 / 约束提取"]
+        M2["检索 + 规则引擎 + LLM Judge"]
+        M3["证据验证 + 冲突仲裁<br/>四状态 MatchResult"]
+    end
+
+    subgraph GEN["M4 · 标书生成引擎"]
+        G1["大纲规划 26 章节"]
+        G2["需求→章节映射"]
+        G3["四策略生成器<br/>证据白名单 · 【待确认】约束"]
+        G4["组装 docx / markdown"]
+    end
+
+    subgraph QA["M5 · 质量检查引擎"]
+        Q1["事实 / 完整性 / 一致性 / 格式"]
+        Q2["5 维评分 + 终版闭环门禁"]
+    end
+
+    subgraph M7["M7 · 企业级能力"]
+        E1["JWT 认证 + RBAC + 审计"]
+        E2["任务中心 + Agent 链路监控"]
+        E3["离线评估体系"]
+    end
+
+    T --> P1 --> P2
+    K --> K1 --> K2 --> K3
+    P2 --> M1
+    K3 --> M2
+    M1 --> M2 --> M3
+    M3 --> G1 --> G2 --> G3 --> G4
+    G4 --> Q1 --> Q2
+    P2 -. 需求基线 .-> M3
+    E1 -. 全链路鉴权 .-> MATCH & GEN & QA
+    E2 -. 任务状态 .-> PARSING & KB & MATCH & GEN
+
 
 ## 三、里程碑路线图
 
